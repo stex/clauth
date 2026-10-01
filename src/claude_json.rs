@@ -43,6 +43,15 @@ const PER_PROFILE_FIELDS: &[&str] = &[
     // read whichever copy was written last as its own 5h/7d usage.
     "cachedUsageUtilization",
     "cachedArtifactRoster",
+    // Org-scoped config and feature-flag caches Claude Code keeps beside them.
+    "groveConfigCache",
+    "promoStartupStatusCache",
+    "metricsStatusCacheByPrincipal",
+    "clientDataCacheSlots",
+    "cachedGrowthBookFeatures",
+    "cachedGrowthBookFeaturesAt",
+    "cachedExperimentFeatures",
+    "cachedExperimentData",
     // Account/org-scoped model caches Claude Code writes into `.claude.json`.
     // Syncing them would bleed one account's model access, org default, and
     // per-model cost/option tables into every other account. Each profile

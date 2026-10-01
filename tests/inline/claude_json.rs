@@ -232,6 +232,44 @@ fn usage_and_artifact_caches_stay_per_profile() {
     );
 }
 
+#[test]
+fn org_scoped_config_and_feature_caches_stay_per_profile() {
+    let _home = HomeSandbox::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let a = tmp.path().join("a.json");
+    let b = tmp.path().join("b.json");
+    let keys = [
+        "groveConfigCache",
+        "promoStartupStatusCache",
+        "metricsStatusCacheByPrincipal",
+        "clientDataCacheSlots",
+        "cachedGrowthBookFeatures",
+        "cachedGrowthBookFeaturesAt",
+        "cachedExperimentFeatures",
+        "cachedExperimentData",
+    ];
+    let mut winner = json!({"numStartups": 2});
+    for key in keys {
+        winner[key] = json!("a");
+    }
+    write_json(&a, &winner);
+    write_json(&b, &json!({"numStartups": 1, "groveConfigCache": "b"}));
+    set_mtime(&a, t(10));
+    set_mtime(&b, t(5));
+
+    sync_paths(&[a, b.clone()]).expect("sync");
+
+    let bj = read_json(&b);
+    assert_eq!(bj["numStartups"], json!(2), "shared field still propagates");
+    assert_eq!(bj["groveConfigCache"], json!("b"));
+    for key in &keys[1..] {
+        assert!(
+            bj.get(*key).is_none(),
+            "{key} must not be injected from the winner"
+        );
+    }
+}
+
 /// `primaryApiKey` is a raw `/login`-managed API key Claude Code stores in
 /// `.claude.json`; `customApiKeyResponses` is its per-key approval ledger. Both
 /// are account-scoped, so a sync must never carry one profile's into another.
