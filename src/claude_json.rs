@@ -37,6 +37,12 @@ const PER_PROFILE_FIELDS: &[&str] = &[
     "passesEligibilityCache",
     "passesLastSeenRemaining",
     "cachedExtraUsageDisabledReason",
+    // Usage and artifact caches stamp only `accountUuid` (the artifact roster
+    // also stamps `organizationUuid`). Two organizations under one account share
+    // an `accountUuid`, so syncing `cachedUsageUtilization` made every profile
+    // read whichever copy was written last as its own 5h/7d usage.
+    "cachedUsageUtilization",
+    "cachedArtifactRoster",
     // Account/org-scoped model caches Claude Code writes into `.claude.json`.
     // Syncing them would bleed one account's model access, org default, and
     // per-model cost/option tables into every other account. Each profile
