@@ -201,7 +201,8 @@ fn usage_and_artifact_caches_stay_per_profile() {
                 "accountUuid": "acct",
                 "utilization": {"five_hour": {"utilization": 14}}
             },
-            "cachedArtifactRoster": {"accountUuid": "acct", "organizationUuid": "org-a"}
+            "cachedArtifactRoster": {"accountUuid": "acct", "organizationUuid": "org-a"},
+            "artifactRosterDenied": true
         }),
     );
     write_json(
@@ -230,6 +231,7 @@ fn usage_and_artifact_caches_stay_per_profile() {
         bj.get("cachedArtifactRoster").is_none(),
         "absent per-profile key must not be injected from the winner"
     );
+    assert!(bj.get("artifactRosterDenied").is_none());
 }
 
 #[test]
@@ -247,6 +249,13 @@ fn org_scoped_config_and_feature_caches_stay_per_profile() {
         "cachedGrowthBookFeaturesAt",
         "cachedExperimentFeatures",
         "cachedExperimentData",
+        "additionalModelOptionsAnsweredAt",
+        "lastSeenOrgDefaultUpdatedAt",
+        "clientDataCache",
+        "metricsStatusCache",
+        "githubWebConnectionStatusCache",
+        "autoCompactWindowsCache",
+        "startupPrefetchedAt",
     ];
     let mut winner = json!({"numStartups": 2});
     for key in keys {
