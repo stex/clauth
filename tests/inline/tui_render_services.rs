@@ -75,7 +75,10 @@ fn plugin_check_with_problems() -> Check {
             "writes the clauth entry into ~/.claude.json".to_string(),
             "f  wire mcp server".to_string(),
             String::new(),
-            "claude: press r to probe".to_string(),
+            format!(
+                "claude: press {} to probe",
+                crate::tui::render::prose::key("r")
+            ),
             "path: /usr/local/bin/clauth".to_string(),
             "data: /home/u/.clauth".to_string(),
         ],
@@ -513,6 +516,7 @@ fn a_shunt_action_running_drops_the_footer_fix_hints() {
 #[test]
 fn the_plugin_detail_folds_the_readouts_and_renders_bare_f_lines() {
     let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
     let app = app_with(plugin_check_with_problems());
     let (rows, buf) = render(&app);
     let screen = rows.join("\n");
@@ -537,19 +541,15 @@ fn the_plugin_detail_folds_the_readouts_and_renders_bare_f_lines() {
         "the bracketed `[f]` anti-pattern is gone:\n{screen}"
     );
 
-    // The dim `f` line: both `f` and the verb render dim (TEXT_DIM), pinned off
-    // the styled buffer rather than the glyph text.
-    let row_idx = rows
-        .iter()
-        .position(|r| r.contains("wire mcp server"))
-        .unwrap_or_else(|| panic!("no wire fix line:\n{screen}"));
-    let row = &rows[row_idx];
-    let byte = row.find("f").expect("f renders");
-    let col = row[..byte].chars().count();
-    assert_eq!(
-        buf.content[row_idx * W as usize + col].fg,
-        super::theme::text_dim_color(),
-        "an unfocused fix line is whole-dim:\n{screen}"
+    // An unfocused fix line: `f` is a key in prose (ACCENT + bold, cloudy
+    // 2026-10-02), the verb dim, pinned off the styled buffer.
+    crate::testutil::assert_prose_part(&buf, "f  wire mcp server", "f", true);
+    let verb = crate::testutil::needle_cells(&buf, "wire mcp server").expect("verb renders");
+    assert!(
+        verb.iter()
+            .filter(|c| c.symbol() != " ")
+            .all(|c| c.fg == super::theme::text_dim_color()),
+        "the verb stays dim:\n{screen}"
     );
 }
 
@@ -2985,4 +2985,21 @@ fn a_stopless_card_still_scrolls_one_line_per_press() {
         max - 1,
         "↑ scrolls back one line"
     );
+}
+
+/// cloudy-tui "Keys and commands inside prose" in a detail pane: the plugin
+/// row's unprobed `claude` line names `r` ACCENT + bold, and the herdr row's
+/// install sub-line names `clauth herdr install` ACCENT, never bold, both
+/// drawn through the detail pane (the herdr line off `herdr_check` itself, the
+/// plugin line off the fixture mirroring `plugin_check`'s).
+#[test]
+fn service_detail_lines_style_their_key_and_command() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let (_, buf) = render(&app_with(plugin_check_with_problems()));
+    crate::testutil::assert_prose_part(&buf, "press r to probe", " r ", true);
+
+    let not_installed = herdr_check(&probe(Some("0.8.0"), None, None), Some(&healthy_config()));
+    let (_, buf) = render(&app_with(not_installed));
+    crate::testutil::assert_prose_part(&buf, "clauth herdr install", "clauth herdr install", false);
 }

@@ -15,6 +15,7 @@ use super::super::app::{
 };
 use super::super::theme;
 use super::format::spinner_frame;
+use super::prose;
 
 const TAB_NAV: (&str, &str) = ("←→", "tabs");
 
@@ -565,10 +566,11 @@ fn inset_x(area: Rect, pad: u16) -> Rect {
 /// `! <message>` — glyph in `WARNING`, message in `TEXT_DIM`.
 fn draw_alert(frame: &mut Frame<'_>, area: Rect, alert: &FooterAlert) {
     let FooterAlert::Warn(msg) = alert;
-    let spans = vec![
-        Span::styled("! ", Style::default().fg(theme::warning_color())),
-        Span::styled(msg.as_str(), theme::dim()),
-    ];
+    let mut spans = vec![Span::styled(
+        "! ",
+        Style::default().fg(theme::warning_color()),
+    )];
+    spans.extend(prose::spans(msg, theme::dim()));
     frame.render_widget(
         Paragraph::new(Line::from(spans))
             .style(theme::base())

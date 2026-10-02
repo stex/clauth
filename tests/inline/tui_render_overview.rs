@@ -3325,3 +3325,27 @@ fn the_accounts_scrollbar_counts_the_codex_rows() {
         "seven rows overflow a 5-row list: thumb 5*5/7 = 3 rows at offset 0, then track"
     );
 }
+
+/// cloudy-tui "Keys and commands inside prose": the codex section's heading
+/// names its switch command in ACCENT, never bold, the rest of the line dim.
+#[test]
+fn the_codex_heading_styles_its_switch_command() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    crate::testutil::write_codex_roster(&["cx1"]);
+    let app = App::new(config_with(
+        vec![profile("cl1", 80.0, 10.0, 3_600)],
+        None,
+        vec![],
+    ));
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| crate::tui::render::draw(f, &app)).unwrap();
+    crate::testutil::assert_prose_part(
+        term.backend().buffer(),
+        "codex — switch with clauth <name>",
+        "clauth <name>",
+        false,
+    );
+}

@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, List, ListItem, ListState, Padding, Paragraph, Wra
 
 use super::super::app::{App, InputState};
 use super::super::theme;
+use super::prose;
 use crate::profile::AppConfig;
 
 /// Account-picker column width for a master-detail tab: ~30% of the body,
@@ -351,10 +352,10 @@ pub(super) fn picker_row(
 pub(super) fn empty_state(hint: &str, hotkey: &str, action: &str) -> Paragraph<'static> {
     Paragraph::new(vec![
         Line::from(Span::styled(hint.to_string(), theme::dim())),
-        Line::from(vec![
-            Span::styled(hotkey.to_string(), theme::accent()),
-            Span::styled(format!(" {action}"), theme::dim()),
-        ]),
+        Line::from(prose::spans(
+            &format!("{} {action}", prose::key(hotkey)),
+            theme::dim(),
+        )),
     ])
     .block(
         Block::bordered()
@@ -505,14 +506,16 @@ pub(super) fn rail_hint_lines(text: &str, width: usize, more_follow: bool) -> Ve
     const LEAD_W: usize = 2; // glyph + 1 space, text at col 2
     let lead = if more_follow { "├ " } else { "└ " };
     let cont = if more_follow { "│ " } else { "  " };
-    wrap_words(text, width.saturating_sub(LEAD_W).max(8))
+    prose::wrap(text, width.saturating_sub(LEAD_W).max(8), theme::faint())
         .into_iter()
         .enumerate()
         .map(|(i, seg)| {
-            Line::from(vec![
-                Span::styled(if i == 0 { lead } else { cont }, theme::line()),
-                Span::styled(seg, theme::faint()),
-            ])
+            let mut spans = vec![Span::styled(
+                if i == 0 { lead } else { cont },
+                theme::line(),
+            )];
+            spans.extend(seg);
+            Line::from(spans)
         })
         .collect()
 }
@@ -582,15 +585,14 @@ fn tooltip_lines(
     text_style: Style,
 ) -> Vec<Line<'static>> {
     const LEAD_W: usize = 3; // " └ " and the matching continuation indent
-    wrap_words(text, width.saturating_sub(LEAD_W).max(8))
+    prose::wrap(text, width.saturating_sub(LEAD_W).max(8), text_style)
         .into_iter()
         .enumerate()
         .map(|(i, seg)| {
             let lead = if i == 0 { " └ " } else { "   " };
-            Line::from(vec![
-                Span::styled(lead, leader_style),
-                Span::styled(seg, text_style),
-            ])
+            let mut spans = vec![Span::styled(lead, leader_style)];
+            spans.extend(seg);
+            Line::from(spans)
         })
         .collect()
 }

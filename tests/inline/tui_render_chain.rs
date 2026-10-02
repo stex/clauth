@@ -2445,3 +2445,64 @@ fn the_add_picker_names_the_blocker_before_a_carried_list() {
         ]
     );
 }
+
+/// cloudy-tui "Keys and commands inside prose" on the Fallback card: the
+/// auth-broken fix's command and every key the preferred-days tooltip names.
+#[test]
+fn chain_prose_styles_the_relogin_command_and_the_day_picker_keys() {
+    use crate::testutil::{assert_prose_part, lines_buffer};
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+
+    let fix = reason_fix(&BlockedReason::AuthBroken, &ProfileName::from("a"));
+    assert_prose_part(
+        &lines_buffer(rail_hint_lines(&fix, 60, false), 60),
+        "re-login with clauth login a",
+        "clauth login a",
+        false,
+    );
+
+    let row = FALLBACK_ROWS
+        .iter()
+        .position(|r| *r == FallbackRow::PreferredDays)
+        .expect("the row exists");
+    let card_of = |cfg: &AppConfig, day_picker: Option<usize>| {
+        let lines = member_detail(
+            cfg,
+            &ProfileName::from("a"),
+            MemberCard {
+                focused: true,
+                row_cursor: row,
+                day_picker,
+                width: 100,
+                ..Default::default()
+            },
+            &HashSet::new(),
+        )
+        .0;
+        lines_buffer(lines, 100)
+    };
+    let plain = config_with(vec![profile("a", 95.0, 20.0, 3600)], Some("a"), vec!["a"]);
+    let card = |day_picker: Option<usize>| card_of(&plain, day_picker);
+    assert_prose_part(&card(None), "· ↵ picks days one by one", "↵", true);
+
+    let mut dead = profile("a", 95.0, 20.0, 3600);
+    dead.disabled = true;
+    let dead = config_with(vec![dead], Some("other"), vec!["a"]);
+    assert_prose_part(&card_of(&dead, None), "disabled · ↵ picks days", "↵", true);
+
+    let mut shared = profile("a", 95.0, 20.0, 3600);
+    shared.preferred_days = vec![chrono::Weekday::Sat];
+    let mut b = profile("b", 95.0, 20.0, 3600);
+    b.preferred_days = vec![chrono::Weekday::Sat];
+    let shared = config_with(vec![shared, b], Some("a"), vec!["a", "b"]);
+    assert_prose_part(&card_of(&shared, None), "first · ↵ picks days", "↵", true);
+    let picking = card(Some(0));
+    for (phrase, part) in [
+        ("← → walk", "← →"),
+        ("· space toggles", "space"),
+        ("· ↵ esc done", "↵ esc"),
+        ("· ↑ ↓ leave", "↑ ↓"),
+    ] {
+        assert_prose_part(&picking, phrase, part, true);
+    }
+}

@@ -34,6 +34,7 @@ use super::panes::{
     name_color, pill, rail_hint_lines, section_box, section_box_verbatim, select_line, value_caret,
     wrap_words,
 };
+use super::prose::{cmd, key};
 use crate::fallback::{
     BlockedReason, DEFAULT_THRESHOLD, blocked_reason, health_blocked_reason, parse_threshold,
     soonest_resume, spend_is_uncapped, spend_room, threshold_for, uncapped_spend_fix,
@@ -427,7 +428,9 @@ fn reason_fix(reason: &BlockedReason, name: &crate::profile::ProfileName) -> Str
     match reason {
         BlockedReason::Disabled => "excluded from the walk, enable it on the setup tab".to_string(),
         BlockedReason::Canceled => "this subscription has been canceled".to_string(),
-        BlockedReason::AuthBroken => format!("re-login with clauth login {name}"),
+        BlockedReason::AuthBroken => {
+            format!("re-login with {}", cmd(&format!("clauth login {name}")))
+        }
         BlockedReason::KeyRejected => "re-enter the api key on the setup tab".to_string(),
         BlockedReason::WeeklySpent { .. } => "weekly limit is spent".to_string(),
         BlockedReason::KickRejected { .. } => "claude code is refusing to start it".to_string(),
@@ -802,21 +805,27 @@ fn member_detail(
                 picking,
                 crate::fallback::day_claim_blocker(cfg, name, key_rejected),
             ) {
-                (Some(_), _) => {
-                    "← → walk · space toggles and saves · ↵ esc done · ↑ ↓ leave".to_string()
-                }
+                (Some(_), _) => format!(
+                    "{} walk · {} toggles and saves · {} done · {} leave",
+                    key("← →"),
+                    key("space"),
+                    key("↵ esc"),
+                    key("↑ ↓")
+                ),
                 (None, Some(reason)) => format!(
-                    "a day list here would claim nothing: {reason} · ↵ picks days one by one"
+                    "a day list here would claim nothing: {reason} · {} picks days one by one",
+                    key("↵")
                 ),
                 (None, None) if !shared.is_empty() => format!(
                     "another list also names {}: work returns to whichever account reads clear \
-                     first · ↵ picks days one by one",
-                    day_list_label(&shared)
+                     first · {} picks days one by one",
+                    day_list_label(&shared),
+                    key("↵")
                 ),
-                (None, None) => {
-                    "work returns to this account on the days set here · ↵ picks days one by one"
-                        .to_string()
-                }
+                (None, None) => format!(
+                    "work returns to this account on the days set here · {} picks days one by one",
+                    key("↵")
+                ),
             };
             lines.extend(help_tooltip_lines(&hint, width));
         }

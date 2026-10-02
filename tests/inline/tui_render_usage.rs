@@ -2196,7 +2196,10 @@ fn kick_hint_diverges_on_auto_start() {
 fn auth_broken_hint_names_the_profile() {
     assert_eq!(
         diag_fix(UsageDiag::AuthBroken, "kerry"),
-        "re-login with clauth login kerry"
+        format!(
+            "re-login with {}",
+            crate::tui::render::prose::cmd("clauth login kerry")
+        )
     );
 }
 
@@ -3070,4 +3073,56 @@ fn the_note_slot_scrolls_the_draft_to_keep_the_caret_visible() {
     );
     let caret = term.get_cursor_position().unwrap();
     assert_eq!(caret.y, 4, "the caret parks on the inner bottom row");
+}
+
+/// cloudy-tui "Keys and commands inside prose" on the Usage tab: the auth-broken
+/// fix's `clauth login <name>`, the console-login messages' `clauth login` and
+/// the empty notes row's `n`, each in its prose's own line.
+#[test]
+fn usage_prose_styles_its_commands_and_the_notes_key() {
+    use crate::testutil::{assert_prose_part, lines_buffer};
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+
+    let rail = rail_hint_lines(&diag_fix(UsageDiag::AuthBroken, "kerry"), 60, false);
+    assert_prose_part(
+        &lines_buffer(rail, 60),
+        "re-login with clauth login kerry",
+        "clauth login kerry",
+        false,
+    );
+
+    let mut qwen = crate::testutil::blank_profile(&crate::profile::ProfileName::from("qwen"));
+    qwen.base_url =
+        Some("https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic".to_string());
+    qwen.provider = crate::providers::Provider::from_base_url(
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+    );
+    qwen.console = Some(crate::profile::ConsoleCredential {
+        token: "dead".to_string(),
+        site: crate::profile::ConsoleSite::International,
+        region: "ap-southeast-1".to_string(),
+    });
+    qwen.fetch_status = Some(FetchStatus::AuthExpired);
+    let rows = build_tp_rows(&qwen, 52, false, false, ResetFmt::default(), None);
+    assert_prose_part(
+        &lines_buffer(rows, 52),
+        "console login expired, run clauth login",
+        "clauth login",
+        false,
+    );
+    qwen.console = None;
+    let rows = build_tp_rows(&qwen, 52, false, false, ResetFmt::default(), None);
+    assert_prose_part(
+        &lines_buffer(rows, 52),
+        "console login needed, run clauth login",
+        "clauth login",
+        false,
+    );
+
+    assert_prose_part(
+        &lines_buffer(notes_lines(None, 60), 60),
+        "press n to add notes",
+        " n ",
+        true,
+    );
 }

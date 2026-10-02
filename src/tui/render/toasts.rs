@@ -8,7 +8,7 @@ use ratatui::widgets::{Clear, Paragraph};
 
 use super::super::app::{App, Toast, ToastKind};
 use super::super::theme;
-use super::panes::wrap_words;
+use super::prose;
 
 pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if app.toasts.is_empty() {
@@ -24,7 +24,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // Widest natural line across all toasts, clamped to cap — drives column width and wrap budget.
     let max_content_width = toasts
         .iter()
-        .flat_map(|t| t.body.lines().map(|l| l.chars().count() as u16))
+        .flat_map(|t| {
+            t.body
+                .lines()
+                .map(|l| prose::plain(l).chars().count() as u16)
+        })
         .max()
         .unwrap_or(0)
         .min(content_cap);
@@ -56,18 +60,17 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let first = lines_iter.next().unwrap_or("");
 
         let mut render_lines: Vec<Line<'_>> = Vec::new();
-        for wrapped in wrap_words(first, max_content_width as usize) {
-            render_lines.push(Line::from(vec![
-                Span::styled("┃ ", bar_style),
-                Span::styled(wrapped, title_style),
-            ]));
+        let bar_line = |wrapped: Vec<Span<'static>>| {
+            let mut spans = vec![Span::styled("┃ ", bar_style)];
+            spans.extend(wrapped);
+            Line::from(spans)
+        };
+        for wrapped in prose::wrap(first, max_content_width as usize, title_style) {
+            render_lines.push(bar_line(wrapped));
         }
         for detail in lines_iter {
-            for wrapped in wrap_words(detail, max_content_width as usize) {
-                render_lines.push(Line::from(vec![
-                    Span::styled("┃ ", bar_style),
-                    Span::styled(wrapped, detail_style),
-                ]));
+            for wrapped in prose::wrap(detail, max_content_width as usize, detail_style) {
+                render_lines.push(bar_line(wrapped));
             }
         }
         if render_lines.is_empty() {

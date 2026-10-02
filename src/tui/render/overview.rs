@@ -19,6 +19,7 @@ use super::panes::{
     bold_when, draw_scrollbar, empty_state, name_color, section_box, section_box_meta, select_line,
     wrap_words,
 };
+use super::prose::{self, cmd_lit};
 use super::usage::{eta_left_secs, window_rate_unit};
 use crate::fallback::{
     BlockedReason, SwitchAction, blocked_reason, next_target, soonest_resume, threshold_for,
@@ -140,10 +141,10 @@ fn draw_overview_accounts(frame: &mut Frame<'_>, area: Rect, app: &App) {
         if !rows.is_empty() {
             rows.push(ListItem::new(Line::from("")));
         }
-        rows.push(ListItem::new(Line::from(vec![Span::styled(
-            "  codex — switch with `clauth <name>`",
+        rows.push(ListItem::new(Line::from(prose::spans(
+            concat!("  codex — switch with ", cmd_lit!("clauth <name>")),
             theme::dim(),
-        )])));
+        ))));
         for row in codex {
             rows.push(ListItem::new(render_codex_row(row, &widths)));
         }

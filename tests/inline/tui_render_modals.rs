@@ -76,7 +76,10 @@ fn fallback_tab_key_grammar_rows_pin_exact_order_and_copy() {
                 "open · edit threshold · edit weekly at · edit max spend · toggle gates / last resort · remove · add",
             ),
             ("+ / -", "step rotate at / weekly at by 5"),
-            ("↵ on rotate at", "type a value, ↵ saves"),
+            (
+                "↵ on rotate at",
+                concat!("type a value, ", key_lit!("↵"), " saves"),
+            ),
             ("↵ on weekly at", "type a %, empty clears"),
             (
                 "space on preferred days",
@@ -84,7 +87,17 @@ fn fallback_tab_key_grammar_rows_pin_exact_order_and_copy() {
             ),
             (
                 "↵ on preferred days",
-                "pick days: ← → walk · space toggles and saves · ↵ esc q leave · ↑ ↓ leave and move",
+                concat!(
+                    "pick days: ",
+                    key_lit!("← →"),
+                    " walk · ",
+                    key_lit!("space"),
+                    " toggles and saves · ",
+                    key_lit!("↵ esc q"),
+                    " leave · ",
+                    key_lit!("↑ ↓"),
+                    " leave and move",
+                ),
             ),
             ("esc", "back / cancel edit"),
         ],
@@ -280,18 +293,30 @@ fn setup_tab_key_grammar_rows_pin_exact_order_and_copy() {
         &[
             ("↑ ↓", "pick account / + new, then a row"),
             ("↵", "open settings · edit field · flip toggle"),
-            ("↵ on a field", "edit inline; ↵ again saves"),
+            (
+                "↵ on a field",
+                concat!("edit inline; ", key_lit!("↵"), " again saves"),
+            ),
             ("space", "cycle the model preset (model row)"),
-            ("env", "+ add env · ↵ edits a value"),
+            (
+                "env",
+                concat!("+ add env · ", key_lit!("↵"), " edits a value"),
+            ),
             (
                 "a",
                 "duplicate the account · save it as a preset · apply one",
             ),
             (
                 "disable / enable",
-                "↵ arms disable, again confirms · enable is one press · inert while active or a live session is open",
+                concat!(
+                    key_lit!("↵"),
+                    " arms disable, again confirms · enable is one press · inert while active or a live session is open",
+                ),
             ),
-            ("delete", "↵ once to arm, again to confirm"),
+            (
+                "delete",
+                concat!(key_lit!("↵"), " once to arm, again to confirm"),
+            ),
             ("esc", "stop editing / back to account list"),
         ],
     );
@@ -946,4 +971,25 @@ fn the_stop_shunt_confirm_renders_its_rows_and_a_danger_stop() {
             "stop is DANGER unfocused at {x}"
         );
     }
+}
+
+/// The preset picker teaches its `d` in prose: ACCENT + bold, the rest dim.
+#[test]
+fn the_preset_picker_styles_its_delete_key() {
+    use crate::tui::app::PresetPickerForm;
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let form = PresetPickerForm {
+        target: "work".to_string(),
+        presets: Vec::new(),
+        cursor: 0,
+    };
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    term.draw(|f| draw_preset_picker(f, f.area(), &form))
+        .unwrap();
+    crate::testutil::assert_prose_part(
+        term.backend().buffer(),
+        "d deletes a saved preset",
+        "d",
+        true,
+    );
 }

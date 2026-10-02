@@ -57,6 +57,7 @@ use crate::profile::{
 use crate::profile_cache::{USAGE_CACHE_FILE, load_profile_cache, profile_cache_mtime_ms};
 use crate::profile_json::{stale_after_ms, usage_cache_file};
 use crate::status::{self, Incident, StatusEvent};
+use crate::tui::render::prose::{self, cmd_lit};
 use crate::tui::theme;
 use crate::update::{self, UpdateEvent};
 use crate::usage::{
@@ -992,12 +993,14 @@ impl DivergenceNotice {
     pub(crate) fn banner_message(&self) -> String {
         match &self.sibling {
             Some(owner) => format!(
-                "live login is '{owner}' · not the active '{}' · press d to resolve",
-                self.active
+                "live login is '{owner}' · not the active '{}' · press {} to resolve",
+                self.active,
+                prose::key("d")
             ),
             None => format!(
-                "live login no longer matches '{}' · press d to resolve",
-                self.active
+                "live login no longer matches '{}' · press {} to resolve",
+                self.active,
+                prose::key("d")
             ),
         }
     }
@@ -4330,7 +4333,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                 app.shutting_down.store(true, Ordering::SeqCst);
             } else {
                 app.armed_quit = true;
-                app.footer_alert = Some(FooterAlert::Warn("press q again to quit".to_string()));
+                app.footer_alert = Some(FooterAlert::Warn(format!(
+                    "press {} again to quit",
+                    prose::key("q")
+                )));
             }
             return;
         }
@@ -4545,7 +4551,10 @@ fn claude_rows_hidden(app: &mut App) -> bool {
     if app.harness_filter.shows_claude() {
         return false;
     }
-    app.toast(ToastKind::Info, "claude rows are hidden, press c");
+    app.toast(
+        ToastKind::Info,
+        format!("claude rows are hidden, press {}", prose::key("c")),
+    );
     true
 }
 
@@ -5061,7 +5070,12 @@ fn apply_service_fix(app: &mut App) {
             app.open_modal(Modal::Confirm(ConfirmState {
                 message: "add the keybinding and sidebar row to herdr's config?".to_string(),
                 detail: Some(
-                    "writes them into herdr's config.toml and validates the result with `herdr config check`.".to_string(),
+                    concat!(
+                        "writes them into herdr's config.toml and validates the result with ",
+                        cmd_lit!("herdr config check"),
+                        "."
+                    )
+                    .to_string(),
                 ),
                 choice: false,
                 on_confirm: ConfirmAction::HealHerdrConfig(path),
@@ -5383,11 +5397,19 @@ fn open_herdr_row_text_confirm(app: &mut App) {
             "drop the delegate token from herdr's sidebar row?".to_string()
         },
         detail: Some(if turning_on {
-            "writes $clauth_delegate into the row clauth added in herdr's config.toml, validated by `herdr config check`; a hand-owned row is left alone with a note."
-                .to_string()
+            concat!(
+                "writes $clauth_delegate into the row clauth added in herdr's config.toml, validated by ",
+                cmd_lit!("herdr config check"),
+                "; a hand-owned row is left alone with a note."
+            )
+            .to_string()
         } else {
-            "rewrites the row clauth added in herdr's config.toml without $clauth_delegate, validated by `herdr config check`; a hand-owned row is left alone with a note."
-                .to_string()
+            concat!(
+                "rewrites the row clauth added in herdr's config.toml without $clauth_delegate, validated by ",
+                cmd_lit!("herdr config check"),
+                "; a hand-owned row is left alone with a note."
+            )
+            .to_string()
         }),
         choice: false,
         on_confirm: ConfirmAction::HerdrDelegateRowText(path),
@@ -5524,7 +5546,7 @@ pub(crate) fn herdr_check(
         detail.push("plugin: not installed".to_string());
         detail.push(herdr_line);
         detail.push(String::new());
-        detail.push("  clauth herdr install".to_string());
+        detail.push(format!("  {}", prose::cmd("clauth herdr install")));
     }
 
     let health = if danger {
@@ -6905,7 +6927,7 @@ fn plugin_check(
         // Unprobed is not missing: the probe is `r`-gated, so before the first
         // `r` the row names the key that fills the line in instead of claiming
         // a binary is absent.
-        None => detail.push("claude: press r to probe".to_string()),
+        None => detail.push(format!("claude: press {} to probe", prose::key("r"))),
     }
     match &clauth_path {
         Some(path) => detail.push(format!("path: {}", path.display())),
@@ -13170,7 +13192,10 @@ pub(crate) fn on_tick(app: &mut App) {
             UpdateEvent::Available(v) => {
                 app.toast(
                     ToastKind::Info,
-                    format!("update available: v{v}\nreinstall with cargo install clauth"),
+                    format!(
+                        "update available: v{v}\nreinstall with {}",
+                        prose::cmd("cargo install clauth")
+                    ),
                 );
             }
         }

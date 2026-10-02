@@ -3239,3 +3239,17 @@ fn a_mid_list_add_candidate_keeps_its_whole_note_on_screen() {
         "precondition: candidates follow the note, so the content end does not pin it:\n{out}"
     );
 }
+
+/// An empty state's hotkey is a key in prose: ACCENT + bold, its action dim.
+#[test]
+fn the_empty_state_hotkey_renders_as_a_key() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: vec![],
+    });
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    crate::testutil::assert_prose_part(term.backend().buffer(), "n to create one", "n", true);
+}

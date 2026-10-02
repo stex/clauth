@@ -18,6 +18,7 @@ mod header;
 mod modals;
 mod overview;
 mod panes;
+pub(super) mod prose;
 mod services;
 mod status;
 mod tabs;

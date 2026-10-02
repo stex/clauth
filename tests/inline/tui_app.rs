@@ -458,7 +458,10 @@ fn the_plugin_check_reads_a_fresh_box_in_three_groups() {
             "writes the clauth entry into ~/.claude.json".to_string(),
             "f  wire mcp server".to_string(),
             String::new(),
-            "claude: press r to probe".to_string(),
+            format!(
+                "claude: press {} to probe",
+                crate::tui::render::prose::key("r")
+            ),
             "path: /usr/bin/clauth".to_string(),
             data_line,
         ],
@@ -7334,7 +7337,10 @@ fn divergence_renders_through_the_system_banner() {
     assert_eq!(banner.severity, BannerSeverity::Warning);
     assert_eq!(
         banner.message,
-        "live login is 'play' · not the active 'work' · press d to resolve",
+        format!(
+            "live login is 'play' · not the active 'work' · press {} to resolve",
+            crate::tui::render::prose::key("d")
+        ),
     );
 
     // Heal the link → the divergence clears and so does the banner.
@@ -13292,7 +13298,11 @@ fn herdr_check_warns_without_fix_when_not_installed() {
     );
     assert_eq!(check.health, super::Health::Warn);
     assert!(check.detail.iter().any(|l| l == "plugin: not installed"));
-    assert!(check.detail.iter().any(|l| l == "  clauth herdr install"));
+    assert!(check.detail.iter().any(|l| *l
+        == format!(
+            "  {}",
+            crate::tui::render::prose::cmd("clauth herdr install")
+        )));
     assert!(check.fix.is_none());
 }
 
@@ -13393,7 +13403,10 @@ fn herdr_check_reads_root_first_and_the_fix_last() {
             "plugin: not installed".to_string(),
             "herdr: 0.8.2".to_string(),
             String::new(),
-            "  clauth herdr install".to_string(),
+            format!(
+                "  {}",
+                crate::tui::render::prose::cmd("clauth herdr install")
+            ),
         ],
         "an uninstalled plugin leads with its verdict"
     );
@@ -14953,10 +14966,11 @@ fn herdr_mode_lands_on_the_plugin_tab_with_the_herdr_row_selected() {
     let plugin = &app.services.checks[2];
     assert_eq!(plugin.label, "plugin");
     assert!(
-        plugin
-            .detail
-            .iter()
-            .any(|l| l == "claude: press r to probe"),
+        plugin.detail.iter().any(|l| *l
+            == format!(
+                "claude: press {} to probe",
+                crate::tui::render::prose::key("r")
+            )),
         "the plugin row invites the `r` probe: {:?}",
         plugin.detail
     );
@@ -15821,8 +15835,11 @@ fn the_codex_only_view_disarms_the_claude_selection_keys() {
     );
     assert_eq!(state_order(&app), ["a", "b"]);
     assert_eq!(
-        app.toasts.back().map(|t| t.body.as_str()),
-        Some("claude rows are hidden, press c"),
+        app.toasts.back().map(|t| t.body.clone()),
+        Some(format!(
+            "claude rows are hidden, press {}",
+            crate::tui::render::prose::key("c")
+        )),
         "the inert key says why"
     );
 
@@ -19341,4 +19358,170 @@ fn the_move_failed_toast_escapes_control_and_bidi() {
         "the move-failed toast escapes control/bidi: {:?}",
         app.toasts.iter().map(|t| &t.body).collect::<Vec<_>>()
     );
+}
+
+// ── keys and commands inside prose (cloudy-tui) ──────────────────────────────
+
+/// The whole frame at `w`×`h`, for the prose-styling pins below.
+fn prose_frame(app: &App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    term.draw(|f| crate::tui::render::draw(f, app)).unwrap();
+    term.backend().buffer().clone()
+}
+
+/// Every app-built line naming a key or a command, drawn through its real
+/// surface: the divergence banner's `d`, the armed quit's `q`, the hidden-rows
+/// toast's `c`, and `herdr config check` in both herdr confirms.
+#[test]
+fn app_prose_styles_keys_and_commands_on_every_surface() {
+    use crate::testutil::assert_prose_part;
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+
+    let mut app = bare_app();
+    let notice = super::DivergenceNotice {
+        active: "work".to_string(),
+        sibling: Some(crate::profile::ProfileName::from("play")),
+        fingerprint: None,
+    };
+    app.banner = Some(super::Banner {
+        severity: super::BannerSeverity::Warning,
+        message: notice.banner_message(),
+    });
+    assert_prose_part(
+        &prose_frame(&app, 120, 30),
+        "press d to resolve",
+        " d ",
+        true,
+    );
+    app.banner = None;
+
+    super::handle_key(&mut app, crate::testutil::key(super::KeyCode::Char('q')));
+    assert!(app.armed_quit, "the first q arms the quit");
+    assert_prose_part(
+        &prose_frame(&app, 120, 30),
+        "press q again to quit",
+        " q ",
+        true,
+    );
+    app.disarm_quit();
+
+    app.harness_filter = super::HarnessFilter::Codex;
+    assert!(super::claude_rows_hidden(&mut app));
+    assert_prose_part(
+        &prose_frame(&app, 120, 30),
+        "rows are hidden, press c",
+        " c",
+        true,
+    );
+    app.toasts.clear();
+
+    let heal = super::herdr_check(
+        &healthy_herdr_probe(),
+        Some(&herdr_config(true, None, SidebarState::Templated)),
+    );
+    app.tab = Tab::Services;
+    app.services.checks = vec![heal];
+    app.services.cursor = 0;
+    super::apply_service_fix(&mut app);
+    assert!(matches!(app.modals.last(), Some(super::Modal::Confirm(_))));
+    assert_prose_part(
+        &prose_frame(&app, 200, 30),
+        "validates the result with herdr config check.",
+        "herdr config check",
+        false,
+    );
+}
+
+/// The help modal's description column names keys ACCENT + bold inside its
+/// TEXT prose; the key column keeps its own slot.
+#[test]
+fn help_descriptions_style_the_keys_they_name() {
+    use crate::testutil::assert_prose_part;
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let mut app = bare_app();
+    app.tab = Tab::Setup;
+    app.open_modal(super::Modal::Help);
+    let buf = prose_frame(&app, 140, 80);
+    assert_prose_part(&buf, "edit inline; ↵ again saves", "↵", true);
+    assert_prose_part(&buf, "+ add env · ↵ edits a value", "↵", true);
+    assert_prose_part(&buf, "↵ once to arm, again to confirm", "↵", true);
+    assert_prose_part(&buf, "(shift tab: previous)", "shift tab", true);
+
+    app.modals.pop();
+    app.tab = Tab::Config;
+    app.open_modal(super::Modal::Help);
+    assert_prose_part(
+        &prose_frame(&app, 140, 80),
+        "same as space ·",
+        "space",
+        true,
+    );
+}
+
+/// The sites the first prose pin does not reach: the update toast's command,
+/// the banner's no-owner arm, and both arms of the herdr row-text confirm.
+#[test]
+fn update_banner_and_row_text_prose_style_their_keys_and_commands() {
+    use super::{KeyCode, Modal, handle_key};
+    use crate::testutil::assert_prose_part;
+    let home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+
+    let mut app = bare_app();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.update_results = rx;
+    tx.send(crate::update::UpdateEvent::Available("9.9.9".to_string()))
+        .expect("send");
+    super::on_tick(&mut app);
+    assert_prose_part(
+        &prose_frame(&app, 120, 30),
+        "reinstall with cargo install clauth",
+        "cargo install clauth",
+        false,
+    );
+    app.toasts.clear();
+
+    let notice = super::DivergenceNotice {
+        active: "work".to_string(),
+        sibling: None,
+        fingerprint: None,
+    };
+    app.banner = Some(super::Banner {
+        severity: super::BannerSeverity::Warning,
+        message: notice.banner_message(),
+    });
+    assert_prose_part(
+        &prose_frame(&app, 120, 30),
+        "no longer matches 'work' · press d to resolve",
+        " d ",
+        true,
+    );
+
+    let tmp = tempfile::tempdir_in(home.home()).expect("tempdir");
+    let config_path = tmp.path().join("herdr").join("config.toml");
+    std::fs::create_dir_all(config_path.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&config_path, "# my config\n").expect("write base config");
+    let mut app = herdr_options_app_with_config(&config_path);
+    for turning_on in [true, false] {
+        app.config().state.herdr.delegate_row_text = !turning_on;
+        handle_key(&mut app, crate::testutil::key(KeyCode::Char(' ')));
+        let Some(Modal::Confirm(state)) = app.modals.last() else {
+            panic!("space opens the row-text confirm");
+        };
+        assert_eq!(
+            state.message.starts_with("add "),
+            turning_on,
+            "the {turning_on} arm opened: {:?}",
+            state.message
+        );
+        assert_prose_part(
+            &prose_frame(&app, 220, 30),
+            "validated by herdr config check;",
+            "herdr config check",
+            false,
+        );
+        app.modals.pop();
+    }
 }

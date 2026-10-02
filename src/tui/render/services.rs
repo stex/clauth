@@ -33,6 +33,7 @@ use super::panes::{
     highlight_row, invalid_tooltip_lines, key_cell, label_style, master_detail, section_box,
     value_caret, wrap_words,
 };
+use super::prose;
 use crate::format::truncate;
 use crate::mcp::jobs::{self, JobPhase, RunningLiveness, StoredJob};
 use crate::profile::{HerdrSettings, PopupWidth};
@@ -839,22 +840,24 @@ fn detail_line(text: &str, key_w: usize, width: usize) -> Line<'static> {
         return Line::from("");
     }
     if text.starts_with("  ") {
-        return Line::from(Span::styled(truncate(text, width), theme::dim()));
+        return Line::from(prose::fit(text, width, theme::dim()));
     }
     if let Some((key, value)) = text.split_once(": ") {
         let pad = key_w.saturating_sub(key.chars().count()) + 2;
         let value_w = width.saturating_sub(key_w + 2);
-        let rendered = if is_path_key(key) {
-            middle_truncate(value, value_w)
+        let tone = value_tone(key, value);
+        let mut spans = vec![Span::styled(
+            format!("{key}{}", " ".repeat(pad)),
+            theme::label(),
+        )];
+        if is_path_key(key) {
+            spans.push(Span::styled(middle_truncate(value, value_w), tone));
         } else {
-            truncate(value, value_w)
-        };
-        return Line::from(vec![
-            Span::styled(format!("{key}{}", " ".repeat(pad)), theme::label()),
-            Span::styled(rendered, value_tone(key, value)),
-        ]);
+            spans.extend(prose::fit(value, value_w, tone));
+        }
+        return Line::from(spans);
     }
-    Line::from(Span::styled(truncate(text, width), theme::body()))
+    Line::from(prose::fit(text, width, theme::body()))
 }
 
 /// The detail keys whose value is a filesystem path: a truncated path keeps
@@ -867,21 +870,25 @@ fn is_path_key(key: &str) -> bool {
     )
 }
 
-/// One `f  <verb>` fix line. Dim while unfocused — the whole line, `f`
-/// included, per the fix-hint ruling; the focused problem takes the selected
-/// row's caret + `TEXT + bold` (the caller adds the hover tint).
+/// One `f  <verb>` fix line: its key is a key in prose (`ACCENT + bold`), the
+/// verb dim while unfocused; the focused problem takes the selected row's caret
+/// + `TEXT + bold` verb (the caller adds the hover tint).
 fn problem_line(text: &str, selected: bool) -> Line<'static> {
-    if selected {
-        Line::from(vec![
+    let (lead, base) = if selected {
+        (
             Span::styled("❯ ", theme::accent().bold()),
-            Span::styled(text.to_string(), label_style(true)),
-        ])
+            label_style(true),
+        )
     } else {
-        Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(text.to_string(), theme::dim()),
-        ])
-    }
+        (Span::styled("  ", Style::default()), theme::dim())
+    };
+    let marked = match text.split_once("  ") {
+        Some((key, verb)) => format!("{}  {verb}", prose::key(key)),
+        None => text.to_string(),
+    };
+    let mut spans = vec![lead];
+    spans.extend(prose::spans(&marked, base));
+    Line::from(spans)
 }
 
 /// Tone the value of a `key: value` row by health-bearing (key, value-head) pairs.

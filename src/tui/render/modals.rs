@@ -23,6 +23,7 @@ use super::panes::{
     DIAG_KICK, DIAG_STALE, DIAG_WEEKLY_SOFT, DIAG_WEEKLY_SPENT, bold_when, draw_scrolled_lines,
     head_cols, key_cell, meta_line,
 };
+use super::prose::{self, cmd_lit, key_lit};
 use crate::fallback::BlockedReason;
 
 pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, modal: &Modal) {
@@ -355,15 +356,18 @@ fn draw_confirm(frame: &mut Frame<'_>, area: Rect, state: &ConfirmState) {
         theme::body(),
     ))];
     if let Some(detail) = &state.detail {
-        lines.push(Line::from(Span::styled(detail.clone(), theme::dim())));
+        lines.push(Line::from(prose::spans(detail, theme::dim())));
     }
-    // The daemon-start confirm's command span is ACCENT inside a dim line,
-    // which a plain `detail` string cannot carry.
+    // The daemon-start confirm's detail is two lines, which the one-line
+    // `detail` cannot hold.
     if matches!(state.on_confirm, ConfirmAction::StartDaemon) {
-        lines.push(Line::from(vec![
-            Span::styled("spawns the clauth daemon detached: ", theme::dim()),
-            Span::styled("clauth daemon", theme::accent()),
-        ]));
+        lines.push(Line::from(prose::spans(
+            concat!(
+                "spawns the clauth daemon detached: ",
+                cmd_lit!("clauth daemon")
+            ),
+            theme::dim(),
+        )));
         lines.push(Line::from(Span::styled(
             "logfile at ~/.clauth/daemon.log.",
             theme::dim(),
@@ -644,8 +648,8 @@ fn draw_preset_picker(frame: &mut Frame<'_>, area: Rect, form: &PresetPickerForm
     }
     // `d` reaches nothing else from here, so the picker has to teach it.
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "d deletes a saved preset",
+    lines.push(Line::from(prose::spans(
+        concat!(key_lit!("d"), " deletes a saved preset"),
         theme::dim(),
     )));
 
@@ -709,18 +713,30 @@ fn tab_specific_rows(
             &[
                 ("\u{2191} \u{2193}", "pick account / + new, then a row"),
                 ("\u{21b5}", "open settings · edit field · flip toggle"),
-                ("\u{21b5} on a field", "edit inline; \u{21b5} again saves"),
+                (
+                    "\u{21b5} on a field",
+                    concat!("edit inline; ", key_lit!("\u{21b5}"), " again saves"),
+                ),
                 ("space", "cycle the model preset (model row)"),
-                ("env", "+ add env · \u{21b5} edits a value"),
+                (
+                    "env",
+                    concat!("+ add env · ", key_lit!("\u{21b5}"), " edits a value"),
+                ),
                 (
                     "a",
                     "duplicate the account \u{b7} save it as a preset \u{b7} apply one",
                 ),
                 (
                     "disable / enable",
-                    "\u{21b5} arms disable, again confirms \u{b7} enable is one press \u{b7} inert while active or a live session is open",
+                    concat!(
+                        key_lit!("\u{21b5}"),
+                        " arms disable, again confirms \u{b7} enable is one press \u{b7} inert while active or a live session is open",
+                    ),
                 ),
-                ("delete", "\u{21b5} once to arm, again to confirm"),
+                (
+                    "delete",
+                    concat!(key_lit!("\u{21b5}"), " once to arm, again to confirm"),
+                ),
                 ("esc", "stop editing / back to account list"),
             ][..],
         )],
@@ -731,7 +747,11 @@ fn tab_specific_rows(
                 ("space", "cycle the focused setting"),
                 (
                     "\u{21b5}",
-                    "same as space · type a value on refresh or weekly limit",
+                    concat!(
+                        "same as ",
+                        key_lit!("space"),
+                        " · type a value on refresh or weekly limit",
+                    ),
                 ),
             ][..],
         )],
@@ -769,7 +789,10 @@ fn tab_specific_rows(
                     "open \u{00b7} edit threshold \u{00b7} edit weekly at \u{00b7} edit max spend \u{00b7} toggle gates / last resort \u{00b7} remove \u{00b7} add",
                 ),
                 ("+ / -", "step rotate at / weekly at by 5"),
-                ("\u{21b5} on rotate at", "type a value, \u{21b5} saves"),
+                (
+                    "\u{21b5} on rotate at",
+                    concat!("type a value, ", key_lit!("\u{21b5}"), " saves"),
+                ),
                 ("\u{21b5} on weekly at", "type a %, empty clears"),
                 (
                     "space on preferred days",
@@ -777,7 +800,17 @@ fn tab_specific_rows(
                 ),
                 (
                     "\u{21b5} on preferred days",
-                    "pick days: \u{2190} \u{2192} walk \u{00b7} space toggles and saves \u{00b7} \u{21b5} esc q leave \u{00b7} \u{2191} \u{2193} leave and move",
+                    concat!(
+                        "pick days: ",
+                        key_lit!("\u{2190} \u{2192}"),
+                        " walk \u{00b7} ",
+                        key_lit!("space"),
+                        " toggles and saves \u{00b7} ",
+                        key_lit!("\u{21b5} esc q"),
+                        " leave \u{00b7} ",
+                        key_lit!("\u{2191} \u{2193}"),
+                        " leave and move",
+                    ),
                 ),
                 ("esc", "back / cancel edit"),
             ][..],
@@ -792,7 +825,11 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let nav: &[(&str, &str)] = &[(
         "\u{2190} \u{2192} \u{00b7} tab",
-        "previous / next tab (shift tab: previous)",
+        concat!(
+            "previous / next tab (",
+            key_lit!("shift tab"),
+            ": previous)"
+        ),
     )];
 
     // The modal's own keys, in their own section. Not folded into `global`
@@ -935,13 +972,12 @@ const HELP_KEY_W: usize = 18;
 const HELP_KEY_GUTTER: usize = 2;
 
 fn help_row(key: &str, desc: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("  {}", key_cell(key, HELP_KEY_W, HELP_KEY_GUTTER)),
-            Style::default().fg(theme::accent_color()).bold(),
-        ),
-        Span::styled(desc.to_string(), Style::default().fg(theme::text_color())),
-    ])
+    let mut spans = vec![Span::styled(
+        format!("  {}", key_cell(key, HELP_KEY_W, HELP_KEY_GUTTER)),
+        Style::default().fg(theme::accent_color()).bold(),
+    )];
+    spans.extend(prose::spans(desc, Style::default().fg(theme::text_color())));
+    Line::from(spans)
 }
 
 /// A legend row, aligned to the same description column the key rows open at.

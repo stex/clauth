@@ -18,6 +18,7 @@ use super::panes::{
     draw_selector_list, head_cols, help_tooltip_lines, highlight_row, key_cell, label_style,
     master_detail, name_color, picker_row, pill, section_box, section_box_verbatim,
 };
+use super::prose::{cmd, cmd_lit};
 
 pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // +1 for the trailing `+ new` picker row.
@@ -356,11 +357,15 @@ fn session_token_lines(
                     charged(
                         "rolling token stalled".to_string(),
                         &format!(
-                            "nothing re-stamped it before expiry · clauth rolling-token {name} re-arms"
+                            "nothing re-stamped it before expiry · {} re-arms",
+                            cmd(&format!("clauth rolling-token {name}"))
                         ),
                     )
                 } else {
-                    charged("expired".to_string(), "re-mint with claude setup-token")
+                    charged(
+                        "expired".to_string(),
+                        concat!("re-mint with ", cmd_lit!("claude setup-token")),
+                    )
                 }
             } else if rolling {
                 // Hours-scale countdown, accent not warning: the daemon

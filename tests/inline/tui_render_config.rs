@@ -1110,3 +1110,30 @@ fn login_labels_read_the_same_for_every_flow() {
     snap.logged_in = true;
     assert_eq!(text(&snap, ConfigRow::Login), "re-login");
 }
+
+/// cloudy-tui "Keys and commands inside prose" on the token row: both fix
+/// lines' commands render ACCENT, never bold.
+#[test]
+fn session_token_fix_lines_style_their_commands() {
+    use crate::claude::SessionTokenStatus as S;
+    use crate::testutil::{assert_prose_part, lines_buffer};
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let now = 1_700_000_000_000_i64;
+    let hour = 3_600_000_i64;
+    let w = 100;
+
+    let dead = session_token_lines(&S::LongLived(Some(now - hour)), false, "acct", now, w);
+    assert_prose_part(
+        &lines_buffer(dead, 100),
+        "re-mint with claude setup-token",
+        "claude setup-token",
+        false,
+    );
+    let stalled = session_token_lines(&S::LongLived(Some(now - hour)), true, "acct", now, w);
+    assert_prose_part(
+        &lines_buffer(stalled, 100),
+        "· clauth rolling-token acct re-arms",
+        "clauth rolling-token acct",
+        false,
+    );
+}
