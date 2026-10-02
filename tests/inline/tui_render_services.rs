@@ -3003,3 +3003,26 @@ fn service_detail_lines_style_their_key_and_command() {
     let (_, buf) = render(&app_with(not_installed));
     crate::testutil::assert_prose_part(&buf, "clauth herdr install", "clauth herdr install", false);
 }
+
+/// A herdr probe error naming a command in backticks (the shared CLI form)
+/// renders that command ACCENT, never bold, backticks gone, on the herdr card.
+#[test]
+fn a_herdr_probe_error_styles_its_backticked_command() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let failed = herdr_check(
+        &probe(
+            Some("0.8.0"),
+            None,
+            Some("`/opt/bin/herdr plugin list --json` failed"),
+        ),
+        Some(&healthy_config()),
+    );
+    let (_, buf) = render(&app_with(failed));
+    crate::testutil::assert_prose_part(
+        &buf,
+        "/opt/bin/herdr plugin list --json failed",
+        "/opt/bin/herdr plugin list --json",
+        false,
+    );
+}

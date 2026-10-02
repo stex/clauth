@@ -178,3 +178,78 @@ fn the_literal_macros_mark_exactly_as_the_functions_do() {
 fn wrap_of_empty_text_is_one_empty_line() {
     assert_eq!(wrap("", 10, dim()), vec![Vec::<Span<'static>>::new()]);
 }
+
+#[test]
+fn mark_commands_marks_a_backticked_command_and_leaves_other_spans_literal() {
+    use super::mark_commands;
+    assert_eq!(
+        mark_commands("revoked: run `clauth login work`"),
+        format!("revoked: run {}", cmd("clauth login work"))
+    );
+    assert_eq!(
+        mark_commands("add `[server.admin]` (error `internal`)"),
+        "add `[server.admin]` (error `internal`)"
+    );
+    assert_eq!(
+        mark_commands("`herdr config check` and `codex login` then `x`"),
+        format!(
+            "{} and {} then `x`",
+            cmd("herdr config check"),
+            cmd("codex login")
+        )
+    );
+    // A command led by the binary's full path is still a command.
+    assert_eq!(
+        mark_commands("`/opt/bin/shunt check --config /etc/s.toml` refused"),
+        format!(
+            "{} refused",
+            cmd("/opt/bin/shunt check --config /etc/s.toml")
+        )
+    );
+    assert_eq!(
+        mark_commands("`/usr/bin/herdr.exe config check`"),
+        cmd("/usr/bin/herdr.exe config check")
+    );
+    // A binary path holding a space, in either separator.
+    assert_eq!(
+        mark_commands("`/Users/A B/bin/shunt check --config /x.toml` refused"),
+        format!(
+            "{} refused",
+            cmd("/Users/A B/bin/shunt check --config /x.toml")
+        )
+    );
+    assert_eq!(
+        mark_commands("`C:\\Program Files\\shunt\\shunt.exe check` refused"),
+        format!(
+            "{} refused",
+            cmd("C:\\Program Files\\shunt\\shunt.exe check")
+        )
+    );
+    // A path after another word is an argument, not the binary.
+    assert_eq!(
+        mark_commands("`foo /usr/bin/clauth x` y"),
+        "`foo /usr/bin/clauth x` y"
+    );
+    // A binary path past the 4096-byte cap is no binary.
+    let long = format!("`/{}clauth login x`", "d/".repeat(2100));
+    assert_eq!(mark_commands(&long), long);
+    // A trailing space is no second word.
+    assert_eq!(mark_commands("`clauth ` x"), "`clauth ` x");
+    // Two words that do not open with a CLI are not a command.
+    assert_eq!(
+        mark_commands("call `GET /api/v1/panes` first"),
+        "call `GET /api/v1/panes` first"
+    );
+    // A bare tool name is a mention, not a command to type.
+    assert_eq!(
+        mark_commands("install `clauth` first"),
+        "install `clauth` first"
+    );
+    // An unclosed backtick and a span crossing a line stay as written.
+    assert_eq!(mark_commands("run `clauth login"), "run `clauth login");
+    assert_eq!(
+        mark_commands("`clauth login\nwork` here"),
+        "`clauth login\nwork` here"
+    );
+    assert_eq!(mark_commands(""), "");
+}

@@ -13,11 +13,11 @@ fn login_expired_shares_one_head_across_line_and_toast() {
     let m = login_expired(&crate::profile::ProfileName::from("work"));
     assert_eq!(
         m.line(),
-        "login for 'work' has expired: refresh token revoked or invalid: run clauth login work"
+        "login for 'work' has expired: refresh token revoked or invalid: run `clauth login work`"
     );
     assert_eq!(
         m.toast(),
-        "login for 'work' has expired\nrefresh token revoked or invalid: run clauth login work"
+        "login for 'work' has expired\nrefresh token revoked or invalid: run `clauth login work`"
     );
     // The bold toast head is exactly the line() prefix before the separator.
     assert_eq!(
@@ -264,7 +264,10 @@ fn every_transient_cause_renders_its_own_copy() {
         for (retry, suffix) in [
             (Retry::Wait, ": retry in a moment"),
             (Retry::Connection, ": check your connection and retry"),
-            (Retry::Restart, ": run clauth login again for a fresh code"),
+            (
+                Retry::Restart,
+                ": run `clauth login` again for a fresh code",
+            ),
         ] {
             let retry_name = format!("{retry:?}");
             if names_next_step {
@@ -317,7 +320,7 @@ fn only_the_relogin_causes_read_as_permanent() {
 fn detail_returns_the_next_step_alone_and_falls_back_to_the_head() {
     assert_eq!(
         login_expired(&crate::profile::ProfileName::from("work")).detail(),
-        "refresh token revoked or invalid: run clauth login work"
+        "refresh token revoked or invalid: run `clauth login work`"
     );
     let bare = Message {
         head: "done".to_string(),

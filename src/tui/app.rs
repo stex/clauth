@@ -3926,7 +3926,7 @@ impl App {
         }
         self.toasts.push_back(Toast {
             kind,
-            body: body.into(),
+            body: prose::mark_commands(&body.into()),
             born: Instant::now(),
         });
     }
@@ -5461,7 +5461,10 @@ pub(crate) fn herdr_check(
     let mut problems: Vec<Problem> = Vec::new();
 
     // Indented, because herdr's own prose carries colons ("manifest unavailable: No such file or directory") and `detail_line` splits the first `": "` into a key column: left flush, a warning renders as a field named after its first clause and widens that column for every real field above it.
-    let error_line = probe.error.as_ref().map(|error| format!("  {error}"));
+    let error_line = probe
+        .error
+        .as_ref()
+        .map(|error| format!("  {}", prose::mark_commands(error)));
     if error_line.is_some() {
         danger = true;
     }
@@ -10230,7 +10233,8 @@ fn run_config_row(app: &mut App, row: ConfigRow) {
                 app.toast(
                     ToastKind::Danger,
                     format!(
-                        "these credentials already belong to '{owner}'\nswitch to it with:  clauth {owner}"
+                        "these credentials already belong to '{owner}'\nswitch to it with:  {}",
+                        prose::cmd(&format!("clauth {owner}"))
                     ),
                 );
                 app.refresh_unsaved_live_login();

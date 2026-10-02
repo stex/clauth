@@ -14344,10 +14344,11 @@ fn herdr_prose_lines_are_indented_so_they_do_not_read_as_fields() {
         None,
     );
     assert!(
-        check
-            .detail
-            .iter()
-            .any(|l| *l == "  could not run `herdr plugin list --json`: boom"),
+        check.detail.iter().any(|l| *l
+            == format!(
+                "  could not run {}: boom",
+                crate::tui::render::prose::cmd("herdr plugin list --json")
+            )),
         "the probe error renders as an indented sub-line: {:?}",
         check.detail
     );
@@ -19524,4 +19525,59 @@ fn update_banner_and_row_text_prose_style_their_keys_and_commands() {
         );
         app.modals.pop();
     }
+}
+
+/// A shared diagnostic names its command in backticks for the CLI; the TUI
+/// toast built from it draws the command ACCENT, never bold, backticks gone.
+#[test]
+fn a_shared_diagnostic_toast_styles_its_backticked_command() {
+    use crate::testutil::assert_prose_part;
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let mut app = bare_app();
+    app.toast(
+        super::ToastKind::Danger,
+        crate::format::login_expired(&crate::profile::ProfileName::from("work")).toast(),
+    );
+    let buf = prose_frame(&app, 120, 30);
+    assert_prose_part(&buf, "run clauth login work", "clauth login work", false);
+    assert!(
+        crate::testutil::needle_cells(&buf, "`").is_none(),
+        "no literal backtick reaches the toast"
+    );
+}
+
+/// The capture row's refusal names the owner's switch command: ACCENT, never
+/// bold, in its toast.
+#[test]
+fn the_capture_refusal_styles_the_owners_switch_command() {
+    use crate::profile::{AppConfig, AppState, Profile, save_profile};
+    use crate::testutil::assert_prose_part;
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let mut play = Profile::new("play".to_string(), None, None);
+    play.credentials = Some(creds_ra("rt-play", "at-play"));
+    save_profile(&play).expect("save play");
+    write_live_creds(&creds_ra("rt-play", "at-play"));
+    let mut app = App::new(AppConfig {
+        state: AppState {
+            profiles: vec!["play".into()],
+            ..AppState::default()
+        },
+        profiles: vec![play],
+    });
+    super::run_config_row(&mut app, super::ConfigRow::CaptureLogin);
+    assert!(
+        app.toasts.back().is_some_and(|t| t
+            .body
+            .starts_with("these credentials already belong to 'play'")),
+        "the capture refuses an owned login: {:?}",
+        app.toasts.back().map(|t| &t.body)
+    );
+    assert_prose_part(
+        &prose_frame(&app, 120, 30),
+        "switch to it with: clauth play",
+        "clauth play",
+        false,
+    );
 }

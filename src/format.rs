@@ -317,7 +317,7 @@ impl Transient {
             Retry::Connection => ": check your connection and retry",
             Retry::Wait => ": retry in a moment",
             Retry::Stated => "",
-            Retry::Restart => ": run clauth login again for a fresh code",
+            Retry::Restart => ": run `clauth login` again for a fresh code",
         }
     }
 
@@ -368,7 +368,7 @@ pub(crate) fn login_expired(name: &crate::profile::ProfileName) -> Message {
     Message {
         head: format!("login for '{name}' has expired"),
         detail: Some(format!(
-            "refresh token revoked or invalid: run clauth login {name}"
+            "refresh token revoked or invalid: run `clauth login {name}`"
         )),
     }
 }

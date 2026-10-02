@@ -5111,7 +5111,7 @@ fn the_quarantine_logline_splits_the_recovery_like_every_other_surface() {
         sink.snapshot(),
         vec![
             "clauth: login for 'ql-oauth' has expired: refresh token revoked or invalid: \
-             run clauth login ql-oauth (flagged auth_broken)"
+             run `clauth login ql-oauth` (flagged auth_broken)"
                 .to_string(),
             "clauth: stored OAuth chain is dead, its api key still works: ql-keyed (run \
              `clauth login ql-keyed --api-key <key>` to clear the quarantine) (flagged auth_broken)"
@@ -5257,7 +5257,7 @@ fn a_failed_set_persist_is_logged_and_retried_by_the_next_call() {
     assert_eq!(
         lines[0],
         "clauth: login for 'qp-set' has expired: refresh token revoked or \
-         invalid: run clauth login qp-set (flagged auth_broken)"
+         invalid: run `clauth login qp-set` (flagged auth_broken)"
     );
     assert!(
         lines[1]

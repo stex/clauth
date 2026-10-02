@@ -50,6 +50,67 @@ pub(crate) fn cmd(command: &str) -> String {
     format!("{CMD_OPEN}{command}{CLOSE}")
 }
 
+/// A binary path is never longer than Linux's `PATH_MAX`; capping the
+/// candidates there keeps a huge backticked span (a tool's whole stderr) from
+/// costing a rescan per space.
+const BINARY_PATH_MAX: usize = 4096;
+
+/// The CLIs whose commands clauth's copy tells the end user to run.
+const COMMAND_BINARIES: &[&str] = &["clauth", "claude", "codex", "herdr", "shunt", "cargo"];
+
+/// Copy shared with the CLI (an error, a `format::Message`) names a command in
+/// backticks. A toast built from it marks each backticked span that is a
+/// command (one of [`COMMAND_BINARIES`], bare or as a path's file stem, a path
+/// holding spaces included, then at least one more word, on one line) and
+/// leaves every other backticked span (an error code, a config key, a bare
+/// tool name) as written.
+pub(crate) fn mark_commands(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('`') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('`') else {
+            break;
+        };
+        let span = &after[..close];
+        out.push_str(&rest[..=open]);
+        if is_command(span) {
+            out.pop();
+            out.push_str(&cmd(span));
+        } else {
+            out.push_str(span);
+            out.push('`');
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Every prefix ending at a space is a candidate binary, so a path holding a
+/// space (`C:\Program Files\…\shunt.exe`) still counts; a candidate with a
+/// separator must start like a path, one without must be a single word, so
+/// `foo /usr/bin/clauth x` is no command. Both separators are split by hand so
+/// a Windows path reads the same on every host.
+fn is_command(span: &str) -> bool {
+    !span.contains('\n')
+        && span
+            .match_indices(' ')
+            .take_while(|(at, _)| *at <= BINARY_PATH_MAX)
+            .any(|(at, _)| {
+                let candidate = &span[..at];
+                let shaped = if candidate.contains(['/', '\\']) {
+                    candidate.starts_with(['/', '\\', '~', '.'])
+                        || candidate.as_bytes().get(1) == Some(&b':')
+                } else {
+                    !candidate.contains(' ')
+                };
+                let leaf = candidate.rsplit(['/', '\\']).next().unwrap_or_default();
+                let stem = leaf.rsplit_once('.').map_or(leaf, |(stem, _)| stem);
+                shaped && COMMAND_BINARIES.contains(&stem) && !span[at + 1..].trim().is_empty()
+            })
+}
+
 /// The text as it reads on screen: every marker dropped.
 pub(crate) fn plain(text: &str) -> String {
     classify(text).into_iter().map(|(ch, _)| ch).collect()
