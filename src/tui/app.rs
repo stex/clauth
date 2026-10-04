@@ -1852,7 +1852,9 @@ impl<T: Default + Send + 'static> ProbeWorker<T> {
     }
 
     /// The newest result that landed since the last drain, if any. A landing
-    /// starts the follow-up run a [`Self::restart`] queued.
+    /// with a follow-up queued by [`Self::restart`] starts it and is dropped:
+    /// that run may predate the change the re-probe was asked to see, so only
+    /// the follow-up's result reaches the caller.
     fn drain(&mut self) -> Option<T> {
         let mut landed = None;
         while let Ok(result) = self.rx.try_recv() {
@@ -1861,8 +1863,41 @@ impl<T: Default + Send + 'static> ProbeWorker<T> {
         }
         if landed.is_some() && std::mem::take(&mut self.rerun) {
             self.start();
+            return None;
         }
         landed
+    }
+}
+
+/// Which env the store plan, the pool read and the standalone readout resolve
+/// against ([`crate::gateway::inherited_env`]): this process's own with no
+/// daemon, else the env record of the daemon holding the singleton, which
+/// [`crate::gateway::inherited_env`] matches by pid and start time. A
+/// fresh/stale flap keeps the source. A daemon restarted between two reads
+/// moves it, though no read saw it absent, and so does the record a starting
+/// daemon writes after it stamps its pid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PlanEnvSource {
+    Own,
+    Daemon {
+        /// The pid sidecar; `None` while unreadable.
+        pid: Option<u32>,
+        /// The identity the env record names; `None` with no record.
+        record: Option<crate::gateway::DaemonIdentity>,
+    },
+}
+
+impl PlanEnvSource {
+    fn of(health: crate::daemon::DaemonHealth) -> Self {
+        match health {
+            crate::daemon::DaemonHealth::Absent => Self::Own,
+            crate::daemon::DaemonHealth::Stale | crate::daemon::DaemonHealth::Fresh => {
+                Self::Daemon {
+                    pid: crate::daemon::holder_pid(),
+                    record: crate::gateway::recorded_daemon_identity(),
+                }
+            }
+        }
     }
 }
 
@@ -2106,11 +2141,9 @@ pub(crate) struct ServicesState {
     /// The last rendered shunt pane height, published by the render the way
     /// [`ServicesState::detail_max_scroll`] is — the key handler's viewport.
     pub(crate) shunt_viewport: std::cell::Cell<u16>,
-    /// The daemon health the last recompute ran with, so a daemon start or stop
-    /// (the header chip's health changing) can restart the plan/pool workers:
-    /// the plan's env source is the running daemon's record, else this
-    /// process's own env, so a presence flip invalidates the cached plan.
-    last_daemon_health: Option<crate::daemon::DaemonHealth>,
+    /// The env source the last recompute saw, so a daemon start, stop or
+    /// restart can restart the plan/pool workers and the standalone probe.
+    last_plan_env_source: Option<PlanEnvSource>,
     /// The `clauth mcp` job store as of the last refresh, newest first: what the
     /// delegates detail draws. Re-read on the same cadence as the checks, because
     /// the server writing it is a DIFFERENT process, so there is nothing to
@@ -2182,7 +2215,7 @@ impl Default for ServicesState {
             shunt_focus: std::cell::Cell::new(None),
             shunt_stop_rows: std::cell::RefCell::new(Vec::new()),
             shunt_viewport: std::cell::Cell::new(0),
-            last_daemon_health: None,
+            last_plan_env_source: None,
             delegates: Vec::new(),
             problem_cursor: 0,
             herdr_options_cursor: 0,
@@ -5025,7 +5058,7 @@ fn toggle_shunt_enabled(app: &mut App) {
         Err(e) => {
             app.toast(
                 ToastKind::Danger,
-                format!("save failed\n{}", escape_control(&e.to_string())),
+                format!("save failed\n{}", escape_control(&format!("{e:#}"))),
             );
         }
     }
@@ -5594,15 +5627,17 @@ fn recompute_services_checks(app: &mut App, refresh_version: bool, shunt: ShuntR
 
     app.services.error = None;
 
-    // A daemon start or stop flips the plan's env source (the running daemon's
-    // record vs this process's own env), so the cached plan is invalid the
-    // moment the chip's health changes: restart the plan/pool workers exactly
-    // as `Restart` does. The first recompute just records the value.
+    // A daemon start, stop or restart moves the plan's env source (the running
+    // daemon's record vs this process's own env), so the cached plan is invalid
+    // the moment the source moves: restart the plan/pool workers exactly as
+    // `Restart` does. The first recompute just records the source.
+    let source = PlanEnvSource::of(app.daemon_health);
     let daemon_flipped = app
         .services
-        .last_daemon_health
-        .is_some_and(|last| last != app.daemon_health);
-    app.services.last_daemon_health = Some(app.daemon_health);
+        .last_plan_env_source
+        .as_ref()
+        .is_some_and(|last| *last != source);
+    app.services.last_plan_env_source = Some(source);
     let shunt = if daemon_flipped {
         ShuntRefresh::Restart
     } else {
@@ -5660,8 +5695,8 @@ fn recompute_services_checks(app: &mut App, refresh_version: bool, shunt: ShuntR
     let (gateway_slot, gateway_supervised) = crate::daemon::gateway_slot(app.daemon_health);
     app.gateway_state = gateway_slot.state;
     if gateway_slot.state == GatewayState::Absent {
-        // The readout's bind comes from the env the adopt reads, which a
-        // daemon start or stop flips.
+        // The readout's bind comes from the env the adopt reads, which moves
+        // with the env source.
         if refresh_version || daemon_flipped {
             app.services.standalone_probe.restart();
         } else if app.services.standalone.is_none() {
@@ -6550,7 +6585,7 @@ fn move_plan_probe() -> MovePlanOutcome {
     match crate::gateway::plan_standalone_stores(&record) {
         Ok(plan) if !plan.moved.is_empty() => MovePlanOutcome::Plan(plan),
         Ok(_) => MovePlanOutcome::Nothing,
-        Err(e) => MovePlanOutcome::Refused(e.to_string()),
+        Err(e) => MovePlanOutcome::Refused(format!("{e:#}")),
     }
 }
 
@@ -6562,13 +6597,15 @@ fn pool_probe() -> PoolOutcome {
     };
     match crate::gateway::chatgpt_oauth_providers_needing_login(&record) {
         Ok(providers) => PoolOutcome::Providers(providers),
-        Err(e) => PoolOutcome::Error(e.to_string()),
+        Err(e) => PoolOutcome::Error(format!("{e:#}")),
     }
 }
 
 /// The production action prober: run one confirmed shunt-card action to
 /// completion. The slow calls — the `/health` probe, the store plan, `shunt
-/// check` — never hold a frame here.
+/// check` — never hold a frame here. Every error keeps its cause chain
+/// (`{e:#}`): a failed write names its path in the context and why it failed
+/// only in the io error under it.
 fn run_shunt_action(job: ShuntActionJob) -> ShuntActionOutcome {
     match job {
         ShuntActionJob::Adopt { found } => run_adopt(&found),
@@ -6579,8 +6616,6 @@ fn run_shunt_action(job: ShuntActionJob) -> ShuntActionOutcome {
         ShuntActionJob::AddAdminTable { record } => {
             run_admin_edit(&record, crate::gateway::AdminNeed::AdminTable)
         }
-        // The cause chain rides the toast: a hold write names its path in the
-        // context and why it failed only in the io error under it.
         ShuntActionJob::Hold => match crate::gateway::write_hold() {
             Ok(()) => ShuntActionOutcome::Held,
             Err(e) => ShuntActionOutcome::HoldFailed {
@@ -6604,7 +6639,7 @@ fn run_adopt(found: &std::path::Path) -> ShuntActionOutcome {
         Ok(candidate) => candidate,
         Err(e) => {
             return ShuntActionOutcome::AdoptFailed {
-                error: e.to_string(),
+                error: format!("{e:#}"),
             };
         }
     };
@@ -6612,7 +6647,7 @@ fn run_adopt(found: &std::path::Path) -> ShuntActionOutcome {
         Ok(addr) => addr,
         Err(e) => {
             return ShuntActionOutcome::AdoptFailed {
-                error: e.to_string(),
+                error: format!("{e:#}"),
             };
         }
     };
@@ -6648,7 +6683,7 @@ fn run_adopt(found: &std::path::Path) -> ShuntActionOutcome {
             path: escape_control(&found.to_string_lossy()),
         },
         Err(e) => ShuntActionOutcome::AdoptFailed {
-            error: e.to_string(),
+            error: format!("{e:#}"),
         },
     }
 }
@@ -6664,7 +6699,7 @@ fn run_move(
         Ok(addr) => addr,
         Err(e) => {
             return ShuntActionOutcome::MoveFailed {
-                error: e.to_string(),
+                error: format!("{e:#}"),
             };
         }
     };
@@ -6684,7 +6719,7 @@ fn run_move(
         }
         Err(e) => {
             return ShuntActionOutcome::MoveFailed {
-                error: e.to_string(),
+                error: format!("{e:#}"),
             };
         }
     };
@@ -6704,12 +6739,12 @@ fn run_move(
                 // write failed, so the `save failed` toast follows it.
                 Err(e) => ShuntActionOutcome::MovedEnableFailed {
                     n: moved.moved.len(),
-                    error: e.to_string(),
+                    error: format!("{e:#}"),
                 },
             }
         }
         Err(e) => ShuntActionOutcome::MoveFailed {
-            error: e.to_string(),
+            error: format!("{e:#}"),
         },
     }
 }
@@ -6732,7 +6767,7 @@ fn run_admin_edit(
         Ok(crate::gateway::AdminEdit::AlreadyPresent) => ShuntActionOutcome::NoOp,
         Ok(_) => ShuntActionOutcome::AdminAdded,
         Err(e) => ShuntActionOutcome::AdminFailed {
-            error: e.to_string(),
+            error: format!("{e:#}"),
         },
     }
 }
@@ -12235,6 +12270,10 @@ fn run_herdr_heal(app: &mut App, path: &std::path::Path) {
     }
 }
 
+/// The detail line of a shunt-card confirm whose adopted record vanished
+/// before the yes.
+const NO_ADOPTED_CONFIG: &str = "no shunt config is adopted any more";
+
 fn run_confirm_action(app: &mut App, action: ConfirmAction) {
     match action {
         ConfirmAction::CaptureConflict(snapshot, from_divergence) => {
@@ -12492,7 +12531,10 @@ fn run_confirm_action(app: &mut App, action: ConfirmAction) {
         }
         ConfirmAction::MoveStoresIn(confirmed) => {
             let Some(record) = app.services.shunt_record.clone() else {
-                app.toast(ToastKind::Danger, "move failed\nno move plan to confirm");
+                app.toast(
+                    ToastKind::Danger,
+                    format!("move failed\n{NO_ADOPTED_CONFIG}"),
+                );
                 return;
             };
             app.services
@@ -12501,6 +12543,10 @@ fn run_confirm_action(app: &mut App, action: ConfirmAction) {
         }
         ConfirmAction::AddAdminKey => {
             let Some(record) = app.services.shunt_record.clone() else {
+                app.toast(
+                    ToastKind::Danger,
+                    format!("admin key failed\n{NO_ADOPTED_CONFIG}"),
+                );
                 return;
             };
             app.services
@@ -12509,6 +12555,10 @@ fn run_confirm_action(app: &mut App, action: ConfirmAction) {
         }
         ConfirmAction::AddAdminTable => {
             let Some(record) = app.services.shunt_record.clone() else {
+                app.toast(
+                    ToastKind::Danger,
+                    format!("admin key failed\n{NO_ADOPTED_CONFIG}"),
+                );
                 return;
             };
             app.services

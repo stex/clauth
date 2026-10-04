@@ -92,15 +92,15 @@ fn the_record_refuses_a_config_it_cannot_edit_in_place() {
     for (config, message) in [
         (
             "shunt.toml",
-            "the adopted shunt config must be an absolute path, got shunt.toml",
+            "the shunt config must be an absolute path, got shunt.toml",
         ),
         (
             "/etc/shunt.yaml",
-            "the adopted shunt config must be TOML, and /etc/shunt.yaml is YAML",
+            "the shunt config must be TOML, and /etc/shunt.yaml is YAML",
         ),
         (
             "/etc/Shunt.YML",
-            "the adopted shunt config must be TOML, and /etc/Shunt.YML is YAML",
+            "the shunt config must be TOML, and /etc/Shunt.YML is YAML",
         ),
     ] {
         let err = GatewayRecord::new(PathBuf::from(config)).expect_err(config);
@@ -128,12 +128,12 @@ fn an_adopt_refuses_a_config_that_does_not_parse() {
     assert_eq!(
         err.downcast_ref::<ConfigUnparsed>(),
         Some(&ConfigUnparsed(
-            "the adopted shunt config does not parse as TOML (line 2)".to_string()
+            "the shunt config does not parse as TOML (line 2)".to_string()
         ))
     );
     assert_eq!(
         err.to_string(),
-        "the adopted shunt config does not parse as TOML (line 2)"
+        "the shunt config does not parse as TOML (line 2)"
     );
 
     let yaml = home.home().join("shunt.yaml");
@@ -159,7 +159,7 @@ fn a_hand_edited_relative_record_fails_the_load() {
     for (text, message) in [
         (
             "config = \"shunt.toml\"\n".to_string(),
-            "the adopted shunt config must be an absolute path, got shunt.toml",
+            "the shunt config must be an absolute path, got shunt.toml",
         ),
         (
             format!("config = '{config}'\nbinary = \"bin/shunt\"\n"),
@@ -1508,7 +1508,7 @@ fn a_config_that_does_not_parse_names_the_line_never_its_text() {
         .expect_err("a bare value is not TOML");
     assert_eq!(
         format!("{err:#}"),
-        "the adopted shunt config does not parse as TOML (line 2)"
+        "the shunt config does not parse as TOML (line 2)"
     );
 }
 
@@ -1836,7 +1836,7 @@ fn adoption_records_a_symlinked_configs_target_and_the_link_survives_the_edit() 
     assert_eq!(
         err.to_string(),
         format!(
-            "the adopted shunt config must be TOML, and {} is YAML",
+            "the shunt config must be TOML, and {} is YAML",
             yaml.display()
         )
     );

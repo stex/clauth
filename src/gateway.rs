@@ -358,6 +358,17 @@ fn write_env_record(record: DaemonEnvRecord) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
+/// The identity the daemon's env record names, `None` when no record reads.
+/// Whether that daemon still holds the singleton is not checked here
+/// ([`inherited_env`] checks it); a caller tracking which env the plan
+/// resolves against compares it across reads.
+pub(crate) fn recorded_daemon_identity() -> Option<DaemonIdentity> {
+    read_env_record()
+        .ok()
+        .flatten()
+        .map(|record| record.identity)
+}
+
 fn read_env_record() -> Result<Option<DaemonEnvRecord>> {
     let path = daemon_env_path()?;
     match std::fs::read(&path) {
@@ -507,7 +518,7 @@ fn check_adoptable(config: &Path) -> Result<()> {
     }
     if !config.is_absolute() {
         bail!(
-            "the adopted shunt config must be an absolute path, got {}",
+            "the shunt config must be an absolute path, got {}",
             config.display()
         );
     }
@@ -547,7 +558,7 @@ impl std::fmt::Display for NotToml {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the adopted shunt config must be TOML, and {} is YAML",
+            "the shunt config must be TOML, and {} is YAML",
             self.path.display()
         )
     }
@@ -2102,10 +2113,10 @@ fn parse_config(text: &str) -> Result<DocumentMut> {
     text.parse::<DocumentMut>().map_err(|e| {
         match e.span().and_then(|span| text.get(..span.start)) {
             Some(head) => anyhow!(
-                "the adopted shunt config does not parse as TOML (line {})",
+                "the shunt config does not parse as TOML (line {})",
                 head.matches('\n').count() + 1
             ),
-            None => anyhow!("the adopted shunt config does not parse as TOML"),
+            None => anyhow!("the shunt config does not parse as TOML"),
         }
     })
 }

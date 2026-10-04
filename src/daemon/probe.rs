@@ -693,8 +693,8 @@ fn stamp_pid() -> std::io::Result<()> {
 }
 
 /// The pid the running daemon stamped into the [`PID_FILE`] sidecar, when one is
-/// fully written. Informational only — its callers reach it past a true
-/// [`singleton_held`], and the header chip answers off [`daemon_health`], so
+/// fully written. Informational only — its callers reach it past a held flock
+/// ([`singleton_held`] true, or [`daemon_health`] not absent), so
 /// presence is proven by the flock either way and a pid left behind by a dead
 /// daemon is never read as one being up.
 ///
@@ -703,7 +703,7 @@ fn stamp_pid() -> std::io::Result<()> {
 /// [`stamp_pid`] reaching `set_len(0)` — a handful of instructions — the dead
 /// predecessor's pid is still whole and readable, so `--status` can print a pid
 /// the OS has since recycled onto something unrelated. The sidecar is never read
-/// unless [`singleton_held`] is already true, so a lingering pid from a fully
+/// unless the flock is held, so a lingering pid from a fully
 /// dead daemon is out of reach; only this in-handover window can surface a stale
 /// one, and truncate-first keeps it to a handful of instructions.
 pub(crate) fn holder_pid() -> Option<u32> {

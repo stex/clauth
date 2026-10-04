@@ -13789,6 +13789,10 @@ fn r_during_a_running_probe_queues_one_follow_up_run() {
         app.services.herdr_probe.running && app.services.standalone_probe.running,
         "each held run's landing starts its follow-up"
     );
+    assert!(
+        app.services.herdr.is_none() && app.services.standalone.is_none(),
+        "a held run's result predates the `r` and is dropped"
+    );
     await_service_probes(&mut app);
     assert_eq!(
         (
@@ -13846,6 +13850,179 @@ fn a_daemon_flip_probes_the_standalone_shunt_again() {
         "the daemon going away probes again"
     );
     await_service_probes(&mut app);
+    assert_eq!(RUNS.load(Ordering::SeqCst), 1);
+}
+
+/// A fresh/stale flap of one daemon keeps the env the readout resolves
+/// against, so the cached readout is not probed again.
+#[test]
+fn a_fresh_stale_flap_does_not_probe_the_standalone_shunt_again() {
+    fn stub() -> super::StandaloneShunt {
+        super::StandaloneShunt::default()
+    }
+    let home = crate::testutil::HomeSandbox::new();
+    let clauth = home.home().join(".clauth");
+    std::fs::create_dir_all(&clauth).unwrap();
+    std::fs::write(clauth.join("clauthd.pid"), "4100\n").unwrap();
+    let mut app = bare_app();
+    app.tab = super::Tab::Services;
+    app.services.standalone_probe.prober = Some(stub);
+    app.services.standalone = Some(super::StandaloneShunt::default());
+    app.daemon_health = crate::daemon::DaemonHealth::Fresh;
+    super::recompute_services_checks(&mut app, false, super::ShuntRefresh::Keep);
+    assert!(
+        !app.services.standalone_probe.running,
+        "fixture control: the first recompute only records the source"
+    );
+    app.daemon_health = crate::daemon::DaemonHealth::Stale;
+    super::recompute_services_checks(&mut app, false, super::ShuntRefresh::Keep);
+    assert!(
+        !app.services.standalone_probe.running,
+        "the same daemon going stale probes nothing again"
+    );
+}
+
+/// A daemon restarted under another pid between two recomputes, with no
+/// absent reading seen between them (the tab hidden, a modal open), is a new
+/// env source: the cached readout is probed again with no `r`.
+#[test]
+fn a_daemon_restarted_unseen_probes_the_standalone_shunt_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    fn stub() -> super::StandaloneShunt {
+        RUNS.fetch_add(1, Ordering::SeqCst);
+        super::StandaloneShunt::default()
+    }
+    let home = crate::testutil::HomeSandbox::new();
+    RUNS.store(0, Ordering::SeqCst);
+    let pid_file = home.home().join(".clauth").join("clauthd.pid");
+    std::fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
+    std::fs::write(&pid_file, "4100\n").unwrap();
+    let mut app = bare_app();
+    app.tab = super::Tab::Services;
+    app.services.standalone_probe.prober = Some(stub);
+    app.services.standalone = Some(super::StandaloneShunt::default());
+    app.daemon_health = crate::daemon::DaemonHealth::Fresh;
+    super::recompute_services_checks(&mut app, false, super::ShuntRefresh::Keep);
+    assert!(
+        !app.services.standalone_probe.running,
+        "fixture control: the first recompute only records the source"
+    );
+    std::fs::write(&pid_file, "4200\n").unwrap();
+    super::recompute_services_checks(&mut app, false, super::ShuntRefresh::Keep);
+    assert!(
+        app.services.standalone_probe.running,
+        "a daemon under another pid probes again"
+    );
+    await_service_probes(&mut app);
+    assert_eq!(RUNS.load(Ordering::SeqCst), 1);
+}
+
+/// A starting daemon stamps its pid before it records its env, so a readout
+/// probed between the two resolved against no record: the record landing is
+/// a new env source and probes again. A daemon restarted under its old pid
+/// records another start time, a new source too.
+#[test]
+fn a_daemon_env_record_landing_or_changing_probes_the_standalone_shunt_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    fn stub() -> super::StandaloneShunt {
+        RUNS.fetch_add(1, Ordering::SeqCst);
+        super::StandaloneShunt::default()
+    }
+    let home = crate::testutil::HomeSandbox::new();
+    RUNS.store(0, Ordering::SeqCst);
+    let clauth = home.home().join(".clauth");
+    std::fs::create_dir_all(&clauth).unwrap();
+    std::fs::write(clauth.join("clauthd.pid"), "4100\n").unwrap();
+    let write_record = |start: &str| {
+        let record = serde_json::json!({
+            "identity": crate::gateway::DaemonIdentity {
+                pid: 4100,
+                start: Some(start.to_string()),
+            },
+            "env": [],
+        });
+        std::fs::write(clauth.join("gateway-env.json"), record.to_string()).unwrap();
+    };
+    let mut app = bare_app();
+    app.tab = super::Tab::Services;
+    app.services.standalone_probe.prober = Some(stub);
+    app.services.standalone = Some(super::StandaloneShunt::default());
+    app.daemon_health = crate::daemon::DaemonHealth::Stale;
+    super::recompute_services_checks(&mut app, false, super::ShuntRefresh::Keep);
+    assert!(
+        !app.services.standalone_probe.running,
+        "fixture control: the first recompute only records the source"
+    );
+    write_record("a");
+    app.daemon_health = crate::daemon::DaemonHealth::Fresh;
+    super::recompute_services_checks(&mut app, false, super::ShuntRefresh::Keep);
+    assert!(
+        app.services.standalone_probe.running,
+        "the record landing probes again"
+    );
+    await_service_probes(&mut app);
+    write_record("b");
+    super::recompute_services_checks(&mut app, false, super::ShuntRefresh::Keep);
+    assert!(
+        app.services.standalone_probe.running,
+        "a record naming another start of the same pid probes again"
+    );
+    await_service_probes(&mut app);
+    assert_eq!(RUNS.load(Ordering::SeqCst), 2);
+}
+
+/// An action landing while a plan run is in flight queues one follow-up. The
+/// held run's plan predates the action, so it is dropped, never shown, and the
+/// card shows nothing until the follow-up's plan lands.
+#[test]
+fn a_plan_landing_behind_a_queued_follow_up_is_dropped() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    fn stub() -> super::MovePlanOutcome {
+        RUNS.fetch_add(1, Ordering::SeqCst);
+        super::MovePlanOutcome::Refused("fresh".to_string())
+    }
+    let home = crate::testutil::HomeSandbox::new();
+    RUNS.store(0, Ordering::SeqCst);
+    crate::testutil::write_adopted_record(&home, true, "[server]\n");
+    let mut app = bare_app();
+    app.tab = super::Tab::Services;
+    app.services.move_plan_probe.prober = Some(stub);
+    // A plan run and an action held in flight, set by hand so no stub runs
+    // for them.
+    app.services.move_plan_probe.running = true;
+    app.services.shunt_action.running = true;
+    app.services
+        .shunt_action
+        .tx
+        .send(super::ShuntActionOutcome::NoOp)
+        .expect("send");
+    super::drain_service_probes(&mut app);
+    assert_eq!(
+        app.services.move_plan, None,
+        "fixture control: the landed action drops the cached plan"
+    );
+    app.services
+        .move_plan_probe
+        .tx
+        .send(super::MovePlanOutcome::Refused("stale".to_string()))
+        .expect("send");
+    super::drain_service_probes(&mut app);
+    assert_eq!(
+        app.services.move_plan, None,
+        "the held run's plan predates the action"
+    );
+    assert!(
+        app.services.move_plan_probe.running,
+        "its landing starts the follow-up"
+    );
+    await_service_probes(&mut app);
+    assert_eq!(
+        app.services.move_plan,
+        Some(super::MovePlanOutcome::Refused("fresh".to_string()))
+    );
     assert_eq!(RUNS.load(Ordering::SeqCst), 1);
 }
 
@@ -17495,16 +17672,79 @@ fn the_adopt_refuses_an_unparsed_config_before_reading_any_bind() {
     std::fs::write(&config, "a = 1\n[server\n").unwrap();
     let _held = crate::daemon::hold_daemon_lock();
     match super::run_adopt(&config) {
-        super::ShuntActionOutcome::AdoptFailed { error } => assert_eq!(
-            error,
-            "the adopted shunt config does not parse as TOML (line 2)"
-        ),
+        super::ShuntActionOutcome::AdoptFailed { error } => {
+            assert_eq!(error, "the shunt config does not parse as TOML (line 2)")
+        }
         other => panic!("expected the parse refusal, got {other:?}"),
     }
     assert!(
         crate::gateway::GatewayRecord::load().unwrap().is_none(),
         "a refused adopt writes no record"
     );
+}
+
+/// A card action's error keeps its cause chain: an adopt whose config does not
+/// exist names the path and, under it, why it could not be resolved. The
+/// cause is the OS's own message, read here independently of the code under
+/// test.
+#[test]
+fn a_failed_adopt_keeps_the_cause_under_its_context() {
+    let home = crate::testutil::HomeSandbox::new();
+    let config = home.home().join("etc").join("missing.toml");
+    let cause = std::fs::canonicalize(&config).expect_err("no such file");
+    match super::run_adopt(&config) {
+        super::ShuntActionOutcome::AdoptFailed { error } => assert_eq!(
+            error,
+            format!(
+                "cannot resolve the shunt config {}: {cause}",
+                config.display()
+            )
+        ),
+        other => panic!("expected the read failure, got {other:?}"),
+    }
+}
+
+/// The card's `refused` and `pool` lines keep an error's cause chain too: a
+/// plan whose env file cannot be read, a pool read whose token file cannot.
+#[test]
+fn the_plan_and_pool_lines_keep_the_cause_under_its_context() {
+    let home = crate::testutil::HomeSandbox::new();
+    let env_file = home.home().join("etc").join("missing.env");
+    let mut record = crate::testutil::write_adopted_record(&home, false, "[server]\n");
+    record.env_file = Some(env_file.clone());
+    crate::gateway::GatewayRecord::update(|slot| {
+        *slot = Some(record.clone());
+        Ok(())
+    })
+    .unwrap();
+    let cause = std::fs::read(&env_file).expect_err("no such file");
+    assert_eq!(
+        super::move_plan_probe(),
+        super::MovePlanOutcome::Refused(format!(
+            "failed to read env file {}: {cause}",
+            env_file.display()
+        ))
+    );
+
+    let mut record = crate::testutil::write_adopted_record(&home, false, "[server]\n");
+    record.env_file = None;
+    crate::gateway::GatewayRecord::update(|slot| {
+        *slot = Some(record.clone());
+        Ok(())
+    })
+    .unwrap();
+    // A directory where the token file belongs: the read fails with an io
+    // error under the path's context.
+    let token = home.home().join(".clauth").join("gateway-admin-token");
+    std::fs::create_dir_all(&token).unwrap();
+    let cause = std::fs::read_to_string(&token).expect_err("a directory");
+    match super::pool_probe() {
+        super::PoolOutcome::Error(error) => assert_eq!(
+            error,
+            format!("failed to read {}: {cause}", token.display())
+        ),
+        other => panic!("expected the token read failure, got {other:?}"),
+    }
 }
 
 /// An env `SHUNT_SERVER__BIND` hides a YAML, unreadable or unparsed find from
@@ -18854,6 +19094,79 @@ fn the_key_confirm_dispatches_the_key_job() {
     );
 }
 
+/// The `enabled` toggle's failed record update keeps the cause chain: with a
+/// directory where the record belongs, the update's read fails and the toast
+/// names the path and, under it, the OS's own reason.
+#[test]
+fn a_failed_enabled_toggle_keeps_the_cause_under_its_context() {
+    let home = crate::testutil::HomeSandbox::new();
+    let record = home.home().join(".clauth").join("gateway.toml");
+    std::fs::create_dir_all(&record).unwrap();
+    let cause = std::fs::read_to_string(&record).expect_err("a directory");
+    let mut app = bare_app();
+    app.tab = super::Tab::Services;
+    super::toggle_shunt_enabled(&mut app);
+    assert_eq!(
+        app.toasts
+            .iter()
+            .map(|t| (t.kind, t.body.clone()))
+            .collect::<Vec<_>>(),
+        vec![(
+            super::ToastKind::Danger,
+            format!("save failed\nfailed to read {}: {cause}", record.display())
+        )]
+    );
+}
+
+/// A card confirm whose adopted record vanished before the yes (another
+/// surface un-adopted the config) toasts why it did nothing, under its own
+/// failure head, and dispatches no job.
+#[test]
+fn a_card_confirm_on_a_vanished_record_names_the_missing_config() {
+    use crate::tui::app::{ConfirmAction, ShuntActionJob, ShuntActionOutcome};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static JOBS: AtomicUsize = AtomicUsize::new(0);
+    fn count(_: ShuntActionJob) -> ShuntActionOutcome {
+        JOBS.fetch_add(1, Ordering::SeqCst);
+        ShuntActionOutcome::NoOp
+    }
+    let _home = crate::testutil::HomeSandbox::new();
+    JOBS.store(0, Ordering::SeqCst);
+    let plan = crate::gateway::StoreMovePlan {
+        moved: Vec::new(),
+        kept: Vec::new(),
+    };
+    for (action, toast) in [
+        (
+            ConfirmAction::MoveStoresIn(plan),
+            "move failed\nno shunt config is adopted any more",
+        ),
+        (
+            ConfirmAction::AddAdminKey,
+            "admin key failed\nno shunt config is adopted any more",
+        ),
+        (
+            ConfirmAction::AddAdminTable,
+            "admin key failed\nno shunt config is adopted any more",
+        ),
+    ] {
+        let mut app = bare_app();
+        app.tab = super::Tab::Services;
+        app.services.shunt_record = None;
+        app.services.shunt_action.prober = Some(count);
+        super::run_confirm_action(&mut app, action);
+        assert_eq!(
+            app.toasts
+                .iter()
+                .map(|t| (t.kind, t.body.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(super::ToastKind::Danger, toast)]
+        );
+        assert!(!app.services.shunt_action.running, "{toast}: no job starts");
+    }
+    assert_eq!(JOBS.load(Ordering::SeqCst), 0);
+}
+
 /// Every string from outside clauth's own code on the card escapes control and
 /// bidi characters: a provider name carrying U+202E and a control byte renders
 /// as its visible `\u{…}` form.
@@ -19644,4 +19957,35 @@ fn the_capture_refusal_styles_the_owners_switch_command() {
         "clauth play",
         false,
     );
+}
+
+/// The move and both admin edits keep the cause chain too: with the adopted
+/// config gone, each names the path it failed to read and, under it, the OS's
+/// own reason.
+#[test]
+fn a_failed_move_or_admin_edit_keeps_the_cause_under_its_context() {
+    let home = crate::testutil::HomeSandbox::new();
+    let record = crate::testutil::write_adopted_record(&home, false, "[server]\n");
+    std::fs::remove_file(record.config()).unwrap();
+    let cause = std::fs::read_to_string(record.config()).expect_err("removed");
+    let expected = format!("failed to read {}: {cause}", record.config().display());
+    let plan = crate::gateway::StoreMovePlan {
+        moved: Vec::new(),
+        kept: Vec::new(),
+    };
+    match super::run_move(&record, &plan) {
+        super::ShuntActionOutcome::MoveFailed { error } => assert_eq!(error, expected),
+        other => panic!("expected the move to fail, got {other:?}"),
+    }
+    for step in [
+        crate::gateway::AdminNeed::WriteKey,
+        crate::gateway::AdminNeed::AdminTable,
+    ] {
+        match super::run_admin_edit(&record, step) {
+            super::ShuntActionOutcome::AdminFailed { error } => {
+                assert_eq!(error, expected, "{step:?}")
+            }
+            other => panic!("expected {step:?} to fail, got {other:?}"),
+        }
+    }
 }

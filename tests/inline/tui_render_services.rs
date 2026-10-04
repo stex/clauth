@@ -2150,6 +2150,45 @@ fn the_shunt_action_renders_the_enabled_and_fix_rows_inert() {
     );
 }
 
+/// The toggle renders the theme's own glyph ([`super::theme::toggle_on`] /
+/// [`super::theme::toggle_off`]) on both tiers, so a glyph change in the theme
+/// reaches the `enabled` row and the herdr toggles with no second copy to edit.
+#[test]
+fn the_enabled_row_renders_the_theme_toggle_glyph() {
+    let home = crate::testutil::HomeSandbox::new();
+    let on = shunt_record(&home, false);
+    let off = shunt_record(&home, true);
+    for tier in [super::theme::Tier::Full, super::theme::Tier::Compatible] {
+        let _tier = crate::testutil::TierSandbox::new(tier);
+        for (record, enabled) in [(&on, true), (&off, false)] {
+            let mut slot = shunt_slot(if enabled {
+                crate::daemon::gateway::GatewayState::Healthy
+            } else {
+                crate::daemon::gateway::GatewayState::Disabled
+            });
+            slot.config = Some(record.config().display().to_string());
+            slot.binary = Some("shunt".to_string());
+            let app = shunt_card_app(slot, true, Some(record.clone()), None, None, None);
+            let (rows, _) = render(&app);
+            let screen = rows.join("\n");
+            let row = rows
+                .iter()
+                .find(|r| r.contains("enabled  "))
+                .unwrap_or_else(|| panic!("no enabled row:\n{screen}"));
+            let glyph = if enabled {
+                super::theme::toggle_on()
+            } else {
+                super::theme::toggle_off()
+            };
+            let value = &row[row.find("enabled  ").unwrap() + "enabled  ".len()..];
+            assert!(
+                value.starts_with(glyph),
+                "{tier:?} enabled={enabled}: the row renders {glyph:?}:\n{screen}"
+            );
+        }
+    }
+}
+
 /// S11: the toggle paints its track, knob and brackets in the contract's
 /// separate colours — `full` track `LINE` + knob `ACCENT`/`TEXT_DIM`;
 /// `compatible` brackets `TEXT_DIM` + `on` `ACCENT` / `off` `TEXT_DIM`. The one

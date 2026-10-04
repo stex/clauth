@@ -348,7 +348,7 @@ fn draw_shunt_detail(frame: &mut Frame<'_>, inner: Rect, app: &App, check: &Chec
             if text == "MOVE PLAN" {
                 move_plan_line = Some(lines.len());
             }
-            lines.extend(shunt_action_lines(text, width, false));
+            lines.extend(shunt_action_lines(text, width));
         }
     }
 
@@ -473,16 +473,10 @@ fn shunt_focus_line(focus: &ShuntFocus, text: &str, selected: bool, app: &App) -
 /// (`moves`/`stays`/`refused`/`codex`/`pool`/`admin`) in the field-label style
 /// and its value in its own tone. `moves`/`stays` middle-truncate their path
 /// and keep the `stays` reason whole (the contract's path rule). The `MOVE
-/// PLAN` eyebrow renders in the label style, underlined while a MOVE PLAN row
-/// holds the walk cursor.
-fn shunt_action_spans(text: &str, width: usize, move_plan_underlined: bool) -> Vec<Span<'static>> {
+/// PLAN` eyebrow renders in the label style.
+fn shunt_action_spans(text: &str, width: usize) -> Vec<Span<'static>> {
     if text == "MOVE PLAN" {
-        let style = if move_plan_underlined {
-            theme::label().underlined()
-        } else {
-            theme::label()
-        };
-        return vec![Span::styled("MOVE PLAN", style)];
+        return vec![Span::styled("MOVE PLAN", theme::label())];
     }
     let Some((key, value)) = text.split_once("  ") else {
         return vec![Span::styled(truncate(text, width), theme::body())];
@@ -527,7 +521,7 @@ fn shunt_action_spans(text: &str, width: usize, move_plan_underlined: bool) -> V
 /// `pool` wrap their sentence within the pane (the tooltip's [`wrap_words`]
 /// shape) so the fix instruction is never cut; every other line renders as one
 /// row through [`shunt_action_spans`].
-fn shunt_action_lines(text: &str, width: usize, move_plan_underlined: bool) -> Vec<Line<'static>> {
+fn shunt_action_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::from("")];
     }
@@ -554,11 +548,7 @@ fn shunt_action_lines(text: &str, width: usize, move_plan_underlined: bool) -> V
             })
             .collect();
     }
-    vec![Line::from(shunt_action_spans(
-        text,
-        width,
-        move_plan_underlined,
-    ))]
+    vec![Line::from(shunt_action_spans(text, width))]
 }
 
 /// The `Check::problems` index of a detail line, `None` for a plain line.
@@ -763,42 +753,39 @@ fn option_row(
     Line::from(spans)
 }
 
-/// A toggle row's value: the tier-dependent glyph painted per the contract —
-/// `full` `─●` (track `LINE`, knob `ACCENT`) / `○─` (knob `TEXT_DIM`, track
-/// `LINE`); `compatible` `[on]`/`[off]` (brackets `TEXT_DIM`, `on` `ACCENT`,
-/// `off` `TEXT_DIM`). An inert row paints the whole glyph faint whatever its
-/// state. One helper feeds the shunt `enabled` row and the herdr toggles, so
-/// both change together.
+/// A toggle row's value: the tier's glyph from [`theme::toggle_on`] /
+/// [`theme::toggle_off`], painted per the contract — `full` `─●` (track
+/// `LINE`, knob `ACCENT`) / `○─` (knob `TEXT_DIM`, track `LINE`); `compatible`
+/// `[on]`/`[off]` (brackets `TEXT_DIM`, `on` `ACCENT`, `off` `TEXT_DIM`). An
+/// inert row paints the whole glyph faint whatever its state. One helper
+/// feeds the shunt `enabled` row and the herdr toggles, so both change
+/// together.
 fn toggle_value(on: bool, inert: bool) -> Vec<Span<'static>> {
+    let glyph = if on {
+        theme::toggle_on()
+    } else {
+        theme::toggle_off()
+    };
     if inert {
-        return vec![Span::styled(
-            if on {
-                theme::toggle_on()
-            } else {
-                theme::toggle_off()
-            },
-            theme::faint(),
-        )];
+        return vec![Span::styled(glyph, theme::faint())];
     }
-    match (theme::tier(), on) {
-        (theme::Tier::Full, true) => vec![
-            Span::styled("─", theme::line()),
-            Span::styled("●", theme::accent()),
-        ],
-        (theme::Tier::Full, false) => vec![
-            Span::styled("○", theme::dim()),
-            Span::styled("─", theme::line()),
-        ],
-        (theme::Tier::Compatible, true) => vec![
-            Span::styled("[", theme::dim()),
-            Span::styled("on", theme::accent()),
-            Span::styled("]", theme::dim()),
-        ],
-        (theme::Tier::Compatible, false) => vec![
-            Span::styled("[", theme::dim()),
-            Span::styled("off", theme::dim()),
-            Span::styled("]", theme::dim()),
-        ],
+    let state = if on { theme::accent() } else { theme::dim() };
+    match theme::tier() {
+        theme::Tier::Full => glyph
+            .char_indices()
+            .map(|(at, c)| {
+                let part = &glyph[at..at + c.len_utf8()];
+                Span::styled(part, if c == '─' { theme::line() } else { state })
+            })
+            .collect(),
+        theme::Tier::Compatible => {
+            let word = glyph.trim_start_matches('[').trim_end_matches(']');
+            vec![
+                Span::styled("[", theme::dim()),
+                Span::styled(word, state),
+                Span::styled("]", theme::dim()),
+            ]
+        }
     }
 }
 

@@ -400,7 +400,7 @@ fn without_a_supervisor_the_slot_reads_the_record_alone() {
         unsupervised_slot(),
         GatewaySlot {
             reason: Some(format!(
-                "invalid gateway record {}: the adopted shunt config must be an absolute path, got shunt.toml",
+                "invalid gateway record {}: the shunt config must be an absolute path, got shunt.toml",
                 path.display()
             )),
             ..blank(GatewayState::Misconfigured)
