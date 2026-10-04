@@ -2106,3 +2106,96 @@ pub(crate) fn heal_env<'a>(
     }
     EnvPin::new(home, &pins)
 }
+
+/// Pin the pane env a herdr report test drives: `HERDR_PANE_ID` selects the
+/// pane, `HERDR_BIN_PATH` (usually an echo shim) names the binary the report
+/// spawns. Borrows the sandbox: the env is a process-global serialized by
+/// `HOME_TEST_LOCK`, which the sandbox holds.
+#[cfg(unix)]
+pub(crate) fn herdr_pane_env<'a>(
+    home: &'a HomeSandbox,
+    pane: Option<&str>,
+    bin: Option<&Path>,
+) -> EnvPin<'a> {
+    EnvPin::new(
+        home,
+        &[
+            ("HERDR_PANE_ID", pane.map(std::ffi::OsStr::new)),
+            ("HERDR_BIN_PATH", bin.map(Path::as_os_str)),
+        ],
+    )
+}
+
+/// Shim that appends its full argv to `report.log` beside itself and exits 0.
+/// `$0` resolves to the shim itself, so the log needs no embedded path; a
+/// report test spawns the shim as `HERDR_BIN_PATH` (or on `PATH`) and reads
+/// the spawned argv back from the log.
+#[cfg(unix)]
+pub(crate) fn echo_shim(dir: &Path, name: &str) -> PathBuf {
+    write_shim(dir, name, r#"echo "$@" >> "$(dirname "$0")/report.log""#)
+}
+
+/// Same log line, then exit 1: the caller must swallow the failing status.
+#[cfg(unix)]
+pub(crate) fn exit1_shim(dir: &Path, name: &str) -> PathBuf {
+    write_shim(
+        dir,
+        name,
+        "echo \"$@\" >> \"$(dirname \"$0\")/report.log\"\nexit 1",
+    )
+}
+
+/// Logs its argv, then sleeps past a bounded caller's kill deadline. `exec` so
+/// the kill takes the whole process.
+#[cfg(unix)]
+pub(crate) fn hang_shim(dir: &Path, name: &str) -> PathBuf {
+    write_shim(
+        dir,
+        name,
+        "echo \"$@\" >> \"$(dirname \"$0\")/report.log\"; exec sleep 30",
+    )
+}
+
+/// Every line the shims in `dir` recorded so far (empty when none).
+#[cfg(unix)]
+pub(crate) fn report_lines(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("report.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Poll `report_lines` until at least `want` lines exist or `timeout` elapses.
+#[cfg(unix)]
+pub(crate) fn wait_for_lines(dir: &Path, want: usize, timeout: std::time::Duration) -> Vec<String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let lines = report_lines(dir);
+        if lines.len() >= want {
+            return lines;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "shim log stalled at {} lines (want {want})",
+            lines.len()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// The `--seq` value of one recorded report line (the token after the flag).
+#[cfg(unix)]
+pub(crate) fn seq_of(line: &str) -> u64 {
+    let mut tokens = line.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "--seq" {
+            return tokens
+                .next()
+                .expect("seq value")
+                .parse()
+                .expect("seq is numeric");
+        }
+    }
+    panic!("no --seq in report line: {line}");
+}

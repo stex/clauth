@@ -15,6 +15,7 @@ mod harness;
 mod herdr;
 mod hook_context;
 mod hook_note;
+mod hook_resume;
 mod jobs_cli;
 mod jsonsync;
 // macOS-only: Claude Code reads its login from the Keychain, not the credentials
