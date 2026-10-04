@@ -261,9 +261,9 @@ impl StandbySlot {
 
 /// How many times a non-[`Claim::Active`] outcome is re-tried before it stands.
 /// **Every presence probe TAKES the flock it tests** — [`daemon_health`] (TUI
-/// header, 1 Hz), [`singleton_held`] (`clauth daemon --status` at whatever rate a
-/// supervisor polls, plus once per `clauth start --with-fallback`, which refuses
-/// when no daemon is there to decide its switches) and [`standby_waiting`] (the
+/// header, 1 Hz), [`singleton_held`] (every caller deciding on a daemon's
+/// presence, `clauth daemon --status` at whatever rate a supervisor polls
+/// among them) and [`standby_waiting`] (the
 /// slot file) try-lock a free file and release it microseconds later — so a single
 /// lost try-lock does not prove a daemon is there. A real holder keeps its lock for the process
 /// lifetime, so anything that clears on the next attempt was a reader. Without

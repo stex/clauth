@@ -4716,6 +4716,70 @@ fn daemon_control_outcomes_toast_and_rearm_the_verb() {
     }
 }
 
+/// A daemon started elsewhere while the start confirm sat open meets no second
+/// spawn: `start` reads the held singleton, says so, and re-probes the chip.
+#[test]
+fn the_daemon_start_confirm_spawns_nothing_once_a_daemon_runs() {
+    use super::{ActionMenuAction, ConfirmAction, ToastKind, dispatch_action_menu_action};
+    use crate::daemon::DaemonHealth;
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = bare_app();
+
+    dispatch_action_menu_action(&mut app, ActionMenuAction::StartDaemon);
+    assert!(matches!(
+        app.modals.last(),
+        Some(super::Modal::Confirm(state)) if matches!(state.on_confirm, ConfirmAction::StartDaemon)
+    ));
+    app.modals.pop();
+    assert_eq!(app.daemon_health, DaemonHealth::Absent);
+
+    let _held = crate::daemon::hold_daemon_lock();
+    super::run_confirm_action(&mut app, ConfirmAction::StartDaemon);
+    let toasts: Vec<(ToastKind, &str)> = app
+        .toasts
+        .iter()
+        .map(|t| (t.kind, t.body.as_str()))
+        .collect();
+    assert_eq!(toasts, vec![(ToastKind::Info, "daemon already running")]);
+    assert!(
+        !app.daemon_control_busy,
+        "no start runs, so the verb stays armed"
+    );
+    assert_eq!(
+        app.daemon_health,
+        DaemonHealth::Stale,
+        "the chip re-probes at once: a held lock with no feed reads stale"
+    );
+}
+
+/// A lock file `start` cannot read is no "no daemon": it refuses, naming the
+/// file, and spawns nothing.
+#[test]
+fn the_daemon_start_confirm_refuses_an_unreadable_lock() {
+    use super::{ConfirmAction, ToastKind};
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = bare_app();
+    let lock = crate::daemon::daemon_lock_path();
+    std::fs::create_dir_all(&lock).unwrap();
+
+    super::run_confirm_action(&mut app, ConfirmAction::StartDaemon);
+    let [toast] = app.toasts.iter().collect::<Vec<_>>()[..] else {
+        panic!("one toast, got {:?}", app.toasts);
+    };
+    assert_eq!(toast.kind, ToastKind::Danger);
+    // Opening a directory for writing: EISDIR on unix, ERROR_ACCESS_DENIED on
+    // Windows.
+    let cause = std::io::Error::from_raw_os_error(if cfg!(windows) { 5 } else { 21 });
+    assert_eq!(
+        toast.body,
+        format!(
+            "daemon start failed\nfailed to open the clauth daemon lock file {}: {cause}",
+            lock.display()
+        )
+    );
+    assert!(!app.daemon_control_busy);
+}
+
 /// The menu's verbs reach their workers and the tick lands their outcome. A
 /// test build refuses to start a daemon, since its binary is the test harness,
 /// and says so; the stop runs the real termination, which finds no daemon in

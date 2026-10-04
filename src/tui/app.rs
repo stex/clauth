@@ -9712,8 +9712,22 @@ fn open_daemon_start_confirm(app: &mut App) {
 /// The daemon-start confirm's `start`: spawn `<this binary> daemon` detached,
 /// then report, off the UI thread, whether a daemon came up. The worker stays
 /// to reap the child, so a daemon this TUI started and stops never lingers as
-/// a zombie while the TUI runs.
+/// a zombie while the TUI runs. The singleton is re-read here, not at the
+/// confirm's opening: a daemon started elsewhere while it sat open would make
+/// the spawn exit at start.
 fn start_daemon(app: &mut App) {
+    match crate::daemon::singleton_held() {
+        Ok(false) => {}
+        Ok(true) => {
+            app.toast(ToastKind::Info, "daemon already running");
+            reprobe_daemon(app);
+            return;
+        }
+        Err(e) => {
+            app.toast(ToastKind::Danger, format!("daemon start failed\n{e:#}"));
+            return;
+        }
+    }
     let exe = match daemon_exe() {
         Ok(exe) => exe,
         Err(e) => {
@@ -9765,8 +9779,8 @@ fn stop_daemon(app: &mut App) {
 /// How often the start worker re-checks its child.
 const DAEMON_CONTROL_POLL: Duration = Duration::from_millis(50);
 
-/// Toast each daemon start/stop outcome, re-arm the menu's verb, and re-probe
-/// the header chip at once rather than at the next throttled probe.
+/// Toast each daemon start/stop outcome, re-arm the menu's verb, and
+/// [`reprobe_daemon`].
 fn drain_daemon_control(app: &mut App) {
     use crate::daemon::{DaemonStop, StartOutcome};
     while let Ok(result) = app.daemon_control_rx.try_recv() {
@@ -9805,10 +9819,16 @@ fn drain_daemon_control(app: &mut App) {
                 app.toast(ToastKind::Danger, format!("daemon stop failed\n{e}"));
             }
         }
-        app.daemon_health = crate::daemon::daemon_health();
-        sync_gateway_state(app);
-        app.last_daemon_probe = Instant::now();
+        reprobe_daemon(app);
     }
+}
+
+/// Re-probe the header chip and the menu's verb at once rather than at the
+/// next throttled probe.
+fn reprobe_daemon(app: &mut App) {
+    app.daemon_health = crate::daemon::daemon_health();
+    sync_gateway_state(app);
+    app.last_daemon_probe = Instant::now();
 }
 
 /// Swap the Tokens model filter and re-clamp the Models cursor — the filtered
