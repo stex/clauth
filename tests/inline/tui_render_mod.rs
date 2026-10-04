@@ -242,6 +242,217 @@ fn a_two_line_toast_bolds_the_head_and_dims_the_detail() {
     );
 }
 
+/// The toast stack of an 80x24 frame: the column its bar sits in, and each
+/// toast row read cell by cell up to the stack's right edge (2 cells in from
+/// the frame's), the cell a wide glyph spills into skipped.
+fn toast_rows(app: &App) -> (u16, Vec<String>) {
+    let (w, h) = (80u16, 24u16);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| super::draw(f, app)).unwrap();
+    let buf = term.backend().buffer();
+    let bar_x = (0..w)
+        .find(|&x| buf[(x, 2)].symbol() == "┃")
+        .expect("a toast bar on row 2");
+    let rows = (2..h)
+        .take_while(|&y| buf[(bar_x, y)].symbol() == "┃")
+        .map(|y| {
+            let mut row = String::new();
+            let mut x = bar_x;
+            while x < w - 2 {
+                let symbol = buf[(x, y)].symbol();
+                row.push_str(symbol);
+                x += ratatui::text::Span::raw(symbol).width().max(1) as u16;
+            }
+            row.trim_end().to_string()
+        })
+        .collect();
+    (bar_x, rows)
+}
+
+fn toast_app(kind: crate::tui::app::ToastKind, body: String) -> App {
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: vec![],
+    });
+    app.toast(kind, body);
+    app
+}
+
+/// The column a toast whose widest shown row is `content` cells wide starts
+/// at: the stack ends 2 cells in from the 80-cell frame, and the toast is
+/// `┃ ` + content + 1 pad cell.
+fn bar_column(content: u16) -> u16 {
+    78 - (content + 3)
+}
+
+#[test]
+fn a_toast_past_three_rows_keeps_three_and_ends_the_last_in_an_ellipsis() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::tui::app::ToastKind;
+
+    // Sixteen 9-char words at the 57-cell budget wrap five to a row: the head
+    // plus four detail rows, five in all. The widest shown row is the third,
+    // 49 cells + the ellipsis.
+    let words: Vec<String> = (1..=16).map(|i| format!("word{i:05}")).collect();
+    let app = toast_app(
+        ToastKind::Danger,
+        format!("move failed\n{}", words.join(" ")),
+    );
+    assert_eq!(
+        toast_rows(&app),
+        (
+            bar_column(50),
+            vec![
+                "┃ move failed".to_string(),
+                "┃ word00001 word00002 word00003 word00004 word00005".to_string(),
+                "┃ word00006 word00007 word00008 word00009 word00010…".to_string(),
+            ]
+        )
+    );
+
+    // A full-width third row has no cell for the ellipsis: it takes the last
+    // character's.
+    let app = toast_app(
+        ToastKind::Danger,
+        format!("move failed\n{}", "x".repeat(200)),
+    );
+    assert_eq!(
+        toast_rows(&app),
+        (
+            bar_column(57),
+            vec![
+                "┃ move failed".to_string(),
+                format!("┃ {}", "x".repeat(57)),
+                format!("┃ {}…", "x".repeat(56)),
+            ]
+        )
+    );
+}
+
+#[test]
+fn a_wide_glyph_toast_wraps_by_cells_and_keeps_its_ellipsis() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::tui::app::ToastKind;
+
+    // `漢` takes two cells: 28 fill 56 of the 57-cell budget, and the third row
+    // has one cell left for the `…`.
+    let app = toast_app(
+        ToastKind::Danger,
+        format!("save failed\n{}", "漢".repeat(200)),
+    );
+    assert_eq!(
+        toast_rows(&app),
+        (
+            bar_column(57),
+            vec![
+                "┃ save failed".to_string(),
+                format!("┃ {}", "漢".repeat(28)),
+                format!("┃ {}…", "漢".repeat(28)),
+            ]
+        )
+    );
+}
+
+#[test]
+fn an_emoji_toast_wraps_by_graphemes() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::tui::app::ToastKind;
+
+    // `⚠️` (U+26A0 + U+FE0F) takes two cells: 28 fill 56 of the budget.
+    let w = "\u{26A0}\u{FE0F}";
+    let app = toast_app(ToastKind::Danger, format!("h\n{}", w.repeat(60)));
+    assert_eq!(
+        toast_rows(&app),
+        (
+            bar_column(57),
+            vec![
+                "┃ h".to_string(),
+                format!("┃ {}", w.repeat(28)),
+                format!("┃ {}…", w.repeat(28)),
+            ]
+        )
+    );
+
+    // A full third row (1 + 28·2 = 57 cells) gives its last grapheme, both
+    // chars of it, to the `…`.
+    let app = toast_app(ToastKind::Danger, format!("h\nA\nx{}", w.repeat(40)));
+    assert_eq!(
+        toast_rows(&app),
+        (
+            bar_column(56),
+            vec![
+                "┃ h".to_string(),
+                "┃ A".to_string(),
+                format!("┃ x{}…", w.repeat(27)),
+            ]
+        )
+    );
+}
+
+#[test]
+fn a_cut_line_does_not_widen_its_toast() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::tui::app::ToastKind;
+
+    let app = toast_app(ToastKind::Danger, format!("a\nb\nc\n{}", "y".repeat(50)));
+    assert_eq!(
+        toast_rows(&app),
+        (
+            bar_column(2),
+            vec!["┃ a".to_string(), "┃ b".to_string(), "┃ c…".to_string()]
+        )
+    );
+}
+
+#[test]
+fn a_toast_ellipsis_takes_its_row_style() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::tui::app::ToastKind;
+    use ratatui::style::Modifier;
+
+    // A head long enough to fill all three rows: the `…` is head-styled.
+    // A detail row's `…` is detail-styled.
+    for (body, fg, bold) in [
+        ("y".repeat(200), crate::tui::theme::text_color(), true),
+        (
+            format!("move failed\n{}", "x".repeat(200)),
+            crate::tui::theme::text_dim_color(),
+            false,
+        ),
+    ] {
+        let app = toast_app(ToastKind::Danger, body.clone());
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| super::draw(f, &app)).unwrap();
+        let cell = &term.backend().buffer()[(bar_column(57) + 2 + 56, 4)];
+        assert_eq!(cell.symbol(), "…", "{body:?}");
+        assert_eq!(cell.fg, fg, "{body:?}");
+        assert_eq!(cell.modifier.contains(Modifier::BOLD), bold, "{body:?}");
+    }
+}
+
+#[test]
+fn a_three_row_toast_renders_whole() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::tui::app::ToastKind;
+
+    let words: Vec<String> = (1..=10).map(|i| format!("word{i:05}")).collect();
+    let app = toast_app(
+        ToastKind::Danger,
+        format!("move failed\n{}", words.join(" ")),
+    );
+    assert_eq!(
+        toast_rows(&app),
+        (
+            bar_column(49),
+            vec![
+                "┃ move failed".to_string(),
+                "┃ word00001 word00002 word00003 word00004 word00005".to_string(),
+                "┃ word00006 word00007 word00008 word00009 word00010".to_string(),
+            ]
+        )
+    );
+}
+
 /// An in-flight OAuth login at the waiting stage with its paste door open, plus
 /// the receiver its worker would hold (dropping it would close the door). The
 /// links are built by hand: nothing here needs a bound listener.

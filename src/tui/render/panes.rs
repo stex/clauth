@@ -520,40 +520,48 @@ pub(super) fn rail_hint_lines(text: &str, width: usize, more_follow: bool) -> Ve
         .collect()
 }
 
-/// Greedy word-wrap to `width` chars; long words are hard-split. Shared by the
-/// status-tab timeline, the tooltip sub-lines, and the chain add-pane prose.
+/// Greedy word-wrap to `width` cells, measured the way the buffer renders: by
+/// grapheme, a wide one taking two; long words are hard-split between
+/// graphemes.
 pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
     }
     let mut lines = Vec::new();
     let mut line = String::new();
+    let mut line_w = 0;
     for word in text.split_whitespace() {
-        if word.chars().count() > width {
+        let word_w = Span::raw(word).width();
+        if word_w > width {
             if !line.is_empty() {
                 lines.push(std::mem::take(&mut line));
             }
             let mut chunk = String::new();
-            for ch in word.chars() {
-                if chunk.chars().count() == width {
+            let mut chunk_w = 0;
+            for grapheme in Span::raw(word).styled_graphemes(Style::default()) {
+                let grapheme_w = Span::raw(grapheme.symbol).width();
+                if !chunk.is_empty() && chunk_w + grapheme_w > width {
                     lines.push(std::mem::take(&mut chunk));
+                    chunk_w = 0;
                 }
-                chunk.push(ch);
+                chunk.push_str(grapheme.symbol);
+                chunk_w += grapheme_w;
             }
-            if !chunk.is_empty() {
-                line = chunk;
-            }
+            line = chunk;
+            line_w = chunk_w;
             continue;
         }
-        let extra = if line.is_empty() { 0 } else { 1 };
-        if line.chars().count() + extra + word.chars().count() > width {
+        let extra = usize::from(!line.is_empty());
+        if line_w + extra + word_w > width {
             lines.push(std::mem::take(&mut line));
             line.push_str(word);
+            line_w = word_w;
         } else {
             if !line.is_empty() {
                 line.push(' ');
             }
             line.push_str(word);
+            line_w += extra + word_w;
         }
     }
     if !line.is_empty() {
