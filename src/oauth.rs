@@ -2491,21 +2491,21 @@ pub(crate) fn rolling_sidecar_restamp_due(name: &ProfileName, now: i64) -> bool 
 /// a comfortable chain / guarded refresh / mint degrade), but judged against
 /// the generous [`ROLLING_RESTAMP_HORIZON_MS`] instead of the switch gate's
 /// minutes-tight grace. For the ACTIVE profile a no-spend re-stamp must also
-/// reach the macOS Keychain (a `Refreshed` outcome already mirrored through
-/// the rotation hook; the running `claude` re-reads the Keychain per
-/// request) — same refresh-less content belt as the hook: nothing carrying a
-/// refresh token can ship through the rolling path.
+/// reach the live slot: the macOS Keychain (a `Refreshed` outcome already
+/// mirrored through the rotation hook; the running `claude` re-reads the
+/// Keychain per request) and the live FILE on every OS, through the
+/// file-layer follower below — same refresh-less content belt as the hook:
+/// nothing carrying a refresh token can ship through the rolling path.
 pub(crate) fn restamp_rolling_token(
     config: &crate::profile::ConfigHandle,
     name: &ProfileName,
     refresher: impl Fn(&str, Option<&str>) -> std::result::Result<TokenResponse, RefreshError>,
 ) -> AuthGate {
     // The sidecar's PRE-re-stamp bearer, captured before the gate below
-    // overwrites it — what the macOS mirror's foreign gate recognizes the
-    // Keychain item against: a rolling bearer changes on every stamp, so
-    // recognition needs the token being replaced, never the one being
-    // written.
-    #[cfg(target_os = "macos")]
+    // overwrites it — what the live-slot followers recognize against: the
+    // macOS Keychain mirror's foreign gate and the file-layer follower's.
+    // A rolling bearer changes on every stamp, so recognition needs the
+    // token being replaced, never the one being written.
     let previous_bearer = crate::claude::install_source_path(name)
         .ok()
         .and_then(|p| crate::profile::read_json_file::<crate::profile::ClaudeCredentials>(&p).ok())
@@ -2578,6 +2578,66 @@ pub(crate) fn restamp_rolling_token(
                  check its login ({e}); mirror skipped, the previous rolling bearer keeps \
                  serving until it expires. Run `clauth {name}` to reinstall"
             ),
+        }
+    }
+    // #104: the file-layer counterpart of the Keychain mirror above — the
+    // Linux live slot IS the file, and a regular file CC wrote (replacing
+    // clauth's symlink) must follow the re-stamp or every session keeps
+    // presenting the revoked bearer. Ready-with-a-changed-sidecar is this
+    // leg's own no-spend stamp; a Refreshed outcome stamps through the
+    // rotation hook, whose own follower leg covers the live slot. The
+    // re-read legs fail LOUD: a silent skip here reproduces the exact #104
+    // symptom through the fix's own failure path.
+    if matches!(gate, AuthGate::Ready)
+        && let Ok(cfg) = config.lock()
+    {
+        if !cfg.is_active(name) {
+            return gate;
+        }
+        drop(cfg);
+        let followed = match crate::claude::install_source_path(name).and_then(|path| {
+            crate::profile::read_json_file::<crate::profile::ClaudeCredentials>(&path)
+        }) {
+            Ok(creds) => {
+                let Some(oauth) = creds.claude_ai_oauth.as_ref() else {
+                    return gate;
+                };
+                if previous_bearer.as_deref() == Some(oauth.access_token.as_str()) {
+                    return gate;
+                }
+                let new_access = Some(oauth.access_token.clone());
+                let candidates: Vec<&str> = [previous_bearer.as_deref(), new_access.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                crate::claude::follow_live_file_login(&candidates, oauth)
+            }
+            Err(e) => {
+                logline!(
+                    "clauth: re-stamped '{name}' but re-reading the sidecar failed: {e:#}. \
+                     Live file left untouched; run `clauth {name}` to reinstall"
+                );
+                return gate;
+            }
+        };
+        match followed {
+            Ok(crate::claude::LiveSlotFollow::NotOurs) => logline!(
+                "clauth: re-stamped '{name}' but the live .credentials.json login is not one \
+                 clauth recognizes (an out-of-band re-login, or a follow write that failed a \
+                 re-stamp back). Live file left untouched; {}",
+                crate::format::RESOLVE_IN_TUI
+            ),
+            Ok(crate::claude::LiveSlotFollow::Unreadable(e)) => logline!(
+                "clauth: re-stamped '{name}' but the live .credentials.json could not be \
+                 parsed to check its login ({e}); live file left untouched. Run \
+                 `clauth {name}` to reinstall"
+            ),
+            Err(e) => logline!(
+                "clauth: re-stamped '{name}' but following the live .credentials.json failed: \
+                 {e:#}. A running claude signs out when its old token expires; run \
+                 `clauth {name}` to reinstall"
+            ),
+            Ok(_) => {}
         }
     }
     gate

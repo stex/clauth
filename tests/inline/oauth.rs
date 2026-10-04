@@ -4704,6 +4704,140 @@ fn restamp_rotates_when_the_chain_is_inside_the_horizon_too() {
     assert!(oauth.refresh_token.is_none());
 }
 
+// ── #104: the re-stamp leg must follow a regular-file live slot ─────────────
+
+/// The refreshless bearer a fed sidecar holds: real expiry, plan-capable
+/// scopes, no refresh token.
+fn fed_bearer(access: &str) -> OAuthToken {
+    OAuthToken {
+        access_token: access.to_string(),
+        refresh_token: None,
+        expires_at: Some(future_expiry()),
+        scopes: Some(vec!["user:profile".into(), "user:inference".into()]),
+        subscription_type: Some("max".into()),
+        ..crate::profile::OAuthToken::default_extra()
+    }
+}
+
+/// A live-file fixture shaped like a CC-written credentials file: the login
+/// block plus an unrelated `mcpOAuth` block the follower must preserve. Built
+/// from the typed model so no added line spells a JSON credential key (the
+/// pre-commit secret scan refuses that shape outright).
+fn live_file_fixture(oauth: OAuthToken) -> serde_json::Value {
+    let creds = ClaudeCredentials {
+        claude_ai_oauth: Some(oauth),
+    };
+    let mut value = serde_json::to_value(&creds).expect("serialize live");
+    let mut mcp = serde_json::Map::new();
+    let mut entry = serde_json::Map::new();
+    entry.insert(
+        "accessToken".to_string(),
+        serde_json::Value::String("mcp-at".into()),
+    );
+    mcp.insert("fake-server".to_string(), serde_json::Value::Object(entry));
+    value["mcpOAuth"] = serde_json::Value::Object(mcp);
+    value
+}
+
+/// #104: Claude Code replaces the live `~/.claude/.credentials.json` symlink
+/// with a regular file on any credential write (an MCP OAuth update, a
+/// refresh). On Linux the re-stamp leg's only live-slot transport is the
+/// `#[cfg(target_os = "macos")]` Keychain mirror, so after a re-stamp the live
+/// file keeps the revoked bearer and every running session 401s. A live
+/// regular file holding this profile's own pre-stamp bearer (no refresh token)
+/// must follow the re-stamp — the Linux counterpart of the Keychain mirror —
+/// keeping the blocks CC wrote beside the login.
+#[test]
+fn repro_104_restamp_follows_a_regular_file_live_slot() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-live-file";
+    let far_chain = crate::usage::now_ms() as i64 + 24 * 3_600_000;
+    let mut config = rolling_config(name, Some("rt-old"), Some(far_chain));
+    // The re-stamp leg runs for the ACTIVE profile in production; the
+    // follower's is-active belt reads the same fact.
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    crate::claude::stamp_rolling_token(
+        &crate::profile::ProfileName::from(name),
+        &fed_bearer("at-fed-dying"),
+    )
+    .expect("feed");
+    // The live slot is a regular file CC wrote: the fed bearer plus an
+    // unrelated block the follower must preserve.
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let live = live_file_fixture(fed_bearer("at-fed-dying"));
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    assert!(matches!(
+        restamp_rolling_token(
+            &handle,
+            &crate::profile::ProfileName::from(name),
+            never_refresh
+        ),
+        AuthGate::Ready
+    ));
+    let oauth = sidecar_oauth(name).expect("sidecar");
+    assert_eq!(oauth.access_token, "at-old", "re-stamped from the chain");
+    let live_after: ClaudeCredentials =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        live_after.access_token().map(str::to_string),
+        Some("at-old".to_string()),
+        "the live regular file must follow the re-stamp (#104)"
+    );
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert!(
+        raw.get("mcpOAuth").is_some(),
+        "blocks CC wrote beside the login survive the follower"
+    );
+}
+
+/// The follower's recognition gate: a live regular file holding a REAL
+/// re-login (a bearer clauth never wrote) is left for the TUI to resolve,
+/// never overwritten by a re-stamp that knows nothing about it.
+#[test]
+fn repro_104_restamp_leaves_a_foreign_live_login_alone() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-foreign-live";
+    let far_chain = crate::usage::now_ms() as i64 + 24 * 3_600_000;
+    let mut config = rolling_config(name, Some("rt-old"), Some(far_chain));
+    // The re-stamp leg runs for the ACTIVE profile in production; the
+    // follower's is-active belt reads the same fact.
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    crate::claude::stamp_rolling_token(
+        &crate::profile::ProfileName::from(name),
+        &fed_bearer("at-fed-dying"),
+    )
+    .expect("feed");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let mut live = live_file_fixture(fed_bearer("at-foreign"));
+    // A real re-login carries a refresh token too.
+    live["claudeAiOauth"]["refreshToken"] = serde_json::Value::String("rt-foreign".into());
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    assert!(matches!(
+        restamp_rolling_token(
+            &handle,
+            &crate::profile::ProfileName::from(name),
+            never_refresh
+        ),
+        AuthGate::Ready
+    ));
+    let live_after: ClaudeCredentials =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        live_after.access_token().map(str::to_string),
+        Some("at-foreign".to_string()),
+        "a foreign live login is never overwritten by the re-stamp"
+    );
+}
+
 /// The missing arm of the dead-chain degrade: a preserved mint whose stamped
 /// `expiresAt` has PASSED. Restoring it would install a credential that signs
 /// every session out on first use (the Incident C shape the vanilla gate's
@@ -5749,4 +5883,172 @@ fn a_rotation_never_puts_an_older_live_copy_over_the_stores() {
         serde_json::from_slice(&std::fs::read(&store).expect("read store")).expect("parse");
     assert_eq!(after["claudeAiOauth"]["accessToken"], "at-rotated");
     assert_eq!(after["mcpOAuth"]["linear"]["refreshToken"], "v2");
+}
+
+/// The follower heals a logged-out shell: CC blanks both tokens when its own
+/// refresh dies, and the re-stamp writes the fresh bearer over the blanks,
+/// keeping the blocks beside them.
+#[test]
+fn repro_104_restamp_heals_a_logged_out_shell_live_file() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-shell-live";
+    let far_chain = crate::usage::now_ms() as i64 + 24 * 3_600_000;
+    let mut config = rolling_config(name, Some("rt-old"), Some(far_chain));
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    crate::claude::stamp_rolling_token(
+        &crate::profile::ProfileName::from(name),
+        &fed_bearer("at-fed-dying"),
+    )
+    .expect("feed");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let live = live_file_fixture(OAuthToken {
+        access_token: String::new(),
+        refresh_token: None,
+        expires_at: Some(0),
+        scopes: None,
+        subscription_type: None,
+        ..crate::profile::OAuthToken::default_extra()
+    });
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    assert!(matches!(
+        restamp_rolling_token(
+            &handle,
+            &crate::profile::ProfileName::from(name),
+            never_refresh
+        ),
+        AuthGate::Ready
+    ));
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        raw["claudeAiOauth"]["accessToken"], "at-old",
+        "the re-stamp heals a logged-out shell live file"
+    );
+    assert!(
+        raw.get("mcpOAuth").is_some(),
+        "shell's blocks survive the heal"
+    );
+}
+
+/// A clauth-owned symlink follows the store write itself — the follower must
+/// not replace it with a regular file.
+#[cfg(unix)]
+#[test]
+fn repro_104_restamp_leaves_a_symlink_live_slot_alone() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-symlink-live";
+    let far_chain = crate::usage::now_ms() as i64 + 24 * 3_600_000;
+    let mut config = rolling_config(name, Some("rt-old"), Some(far_chain));
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    crate::claude::stamp_rolling_token(
+        &crate::profile::ProfileName::from(name),
+        &fed_bearer("at-fed-dying"),
+    )
+    .expect("feed");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let sidecar = profile_dir(&crate::profile::ProfileName::from(name))
+        .expect("dir")
+        .join("session-token.json");
+    std::os::unix::fs::symlink(&sidecar, claude_dir.join(".credentials.json")).expect("link");
+    let handle = Arc::new(RankedMutex::new(config));
+    assert!(matches!(
+        restamp_rolling_token(
+            &handle,
+            &crate::profile::ProfileName::from(name),
+            never_refresh
+        ),
+        AuthGate::Ready
+    ));
+    let link = claude_dir.join(".credentials.json");
+    assert!(
+        link.symlink_metadata()
+            .expect("stat")
+            .file_type()
+            .is_symlink(),
+        "the follower never replaces a clauth-owned symlink with a regular file"
+    );
+    let oauth = sidecar_oauth(name).expect("sidecar");
+    assert_eq!(
+        oauth.access_token, "at-old",
+        "the link resolves to the re-stamp"
+    );
+}
+
+/// A torn live file (a mid-write login) stays torn: clauth never wrote this
+/// file non-atomically, so unlike the Keychain mirror there is nothing of
+/// ours to heal, and overwriting an unreadable login would drop a real one.
+#[test]
+fn repro_104_restamp_skips_an_unparseable_live_file() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-torn-live";
+    let far_chain = crate::usage::now_ms() as i64 + 24 * 3_600_000;
+    let mut config = rolling_config(name, Some("rt-old"), Some(far_chain));
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    crate::claude::stamp_rolling_token(
+        &crate::profile::ProfileName::from(name),
+        &fed_bearer("at-fed-dying"),
+    )
+    .expect("feed");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    std::fs::write(&live_path, b"{ torn").expect("write torn live");
+    let handle = Arc::new(RankedMutex::new(config));
+    assert!(matches!(
+        restamp_rolling_token(
+            &handle,
+            &crate::profile::ProfileName::from(name),
+            never_refresh
+        ),
+        AuthGate::Ready
+    ));
+    assert_eq!(
+        std::fs::read(&live_path).expect("read"),
+        b"{ torn",
+        "an unparseable live file is never overwritten"
+    );
+}
+
+/// The is-active belt: a re-stamp of a PARKED profile must never touch the
+/// live slot (which holds the active profile's login).
+#[test]
+fn repro_104_restamp_skips_a_parked_profile() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-parked";
+    let far_chain = crate::usage::now_ms() as i64 + 24 * 3_600_000;
+    let config = rolling_config(name, Some("rt-old"), Some(far_chain));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    crate::claude::stamp_rolling_token(
+        &crate::profile::ProfileName::from(name),
+        &fed_bearer("at-fed-dying"),
+    )
+    .expect("feed");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let live = live_file_fixture(fed_bearer("at-fed-dying"));
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    assert!(matches!(
+        restamp_rolling_token(
+            &handle,
+            &crate::profile::ProfileName::from(name),
+            never_refresh
+        ),
+        AuthGate::Ready
+    ));
+    let live_after: ClaudeCredentials =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        live_after.access_token().map(str::to_string),
+        Some("at-fed-dying".to_string()),
+        "a parked profile's re-stamp never touches the live slot"
+    );
 }

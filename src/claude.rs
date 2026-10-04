@@ -1037,6 +1037,72 @@ fn paths_equivalent(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// The live slot's file-layer follower (#104): the Linux counterpart of the
+/// macOS Keychain mirror. After a credential write changes what the live slot
+/// should hold (a re-stamp, a rotation), a REGULAR-file live slot holding a
+/// login clauth wrote is updated in place — Claude Code replaced the symlink
+/// with a regular file (its temp+rename write), and without this the revoked
+/// bearer keeps serving. A symlink needs nothing (the store write just
+/// landed); `Missing` has nothing to write; a login clauth does not recognize
+/// is left for the TUI — the same recognition gate as the Keychain mirror.
+#[derive(Debug)]
+pub(crate) enum LiveSlotFollow {
+    /// The live login was one clauth wrote; the file now holds `incoming`.
+    Followed,
+    /// The live file holds a different login (a real CC re-login). Untouched.
+    NotOurs,
+    /// The live file exists but does not parse — possibly a mid-write login.
+    /// Unlike the Keychain mirror (whose truncated bytes are almost always
+    /// clauth's own cut-off write), clauth never writes this file
+    /// non-atomically, so there is nothing of ours to heal. Untouched.
+    /// Carries the parse error (positions and field names, never values).
+    Unreadable(serde_json::Error),
+    /// No live file, or a live symlink (which follows the store write itself).
+    Noop,
+}
+
+/// Follow `incoming` into a regular-file live slot when its login is one of
+/// `candidates` (the bearer(s) clauth wrote or is replacing) or a logged-out
+/// shell. The write replaces the `claudeAiOauth` block alone — every other
+/// block (`mcpOAuth` included) survives, the file-layer `Keep::Everything`.
+/// The write is atomic; callers hold their own locks, as with the mirror. The
+/// recognize-then-write gap is the same accepted race the mirror carries: the
+/// next poll's content check self-heals a lost interleaving with a publish.
+pub(crate) fn follow_live_file_login(
+    candidates: &[&str],
+    incoming: &crate::profile::OAuthToken,
+) -> Result<LiveSlotFollow> {
+    let link = claude_credentials_path()?;
+    let meta = match link.symlink_metadata() {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LiveSlotFollow::Noop),
+        Err(e) => return Err(e).context("failed to stat .credentials.json"),
+    };
+    if meta.file_type().is_symlink() {
+        return Ok(LiveSlotFollow::Noop);
+    }
+    let bytes = std::fs::read(&link).context("failed to read .credentials.json")?;
+    let live = match serde_json::from_slice::<ClaudeCredentials>(&bytes) {
+        Ok(live) => live,
+        Err(e) => return Ok(LiveSlotFollow::Unreadable(e)),
+    };
+    let recognized =
+        live_login_is_empty(&live) || live.access_token().is_some_and(|t| candidates.contains(&t));
+    if !recognized {
+        return Ok(LiveSlotFollow::NotOurs);
+    }
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&bytes).context("failed to parse .credentials.json")?;
+    value["claudeAiOauth"] =
+        serde_json::to_value(incoming).context("failed to serialize the incoming login")?;
+    atomic_write_600(
+        &link,
+        serde_json::to_vec(&value).context("failed to serialize .credentials.json")?,
+    )
+    .context("failed to follow the live login")?;
+    Ok(LiveSlotFollow::Followed)
+}
+
 /// True when the profile has no stored credentials but the live path is a regular
 /// file with a completed OAuth login — first login after blank profile creation.
 /// clauth adopts this rather than treating it as divergence.
