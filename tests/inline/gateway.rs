@@ -10,7 +10,7 @@ use std::net::{SocketAddr, TcpListener};
 
 use super::*;
 use crate::testutil::{
-    HomeSandbox, request_header, request_path, serve_endpoints, serve_endpoints_raw,
+    EnvPin, HomeSandbox, request_header, request_path, serve_endpoints, serve_endpoints_raw,
 };
 
 fn write(path: &Path, text: &str) {
@@ -4931,18 +4931,43 @@ fn a_pool_body_that_breaks_off_is_its_own_typed_error() {
     write_pool_token(&home, POOL_TOKEN);
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
     let addr = listener.local_addr().expect("addr");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    // A nonblocking accept: a read that returns without dialing ends the wait
+    // at once, so the test reds instead of parking on a blocking `accept`.
+    // The flag is read BEFORE each `accept`: a dial completes before the read
+    // returns, so once the flag reads set, any dialed connection is already
+    // queued for that `accept`.
+    let read_returned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let returned = std::sync::Arc::clone(&read_returned);
     let server = std::thread::spawn(move || {
         use std::io::{Read as _, Write as _};
-        let (mut stream, _) = listener.accept().expect("accept");
+        let mut stream = loop {
+            let read_done = returned.load(std::sync::atomic::Ordering::SeqCst);
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if read_done {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        };
+        stream.set_nonblocking(false).expect("blocking stream");
         let mut request = [0u8; 4096];
         let _ = stream.read(&mut request).expect("request");
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"marker-broken")
             .expect("head");
+        true
     });
     let record = pool_record(&home, addr);
     let err = chatgpt_oauth_providers_needing_login(&record).expect_err("broken");
-    server.join().expect("server");
+    read_returned.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(server.join().expect("server"), "the pool read never dialed");
     let typed = err
         .downcast_ref::<ChatgptOauthProvidersError>()
         .expect("a typed ChatgptOauthProvidersError");
@@ -4980,8 +5005,21 @@ fn a_daemon_with_no_env_record_is_the_pool_reads_own_typed_error() {
 /// a proxy the builder arrived with (as ureq's default takes one from the
 /// env) is dropped, no redirect is followed, and a wedged gateway cannot park
 /// the caller. Health: 4 s connect + 2 s response = 6 s; pool: 4 s + 20 s = 24 s.
+/// The real agents are built under an env proxy, so a constructor that
+/// re-reads the env after `direct_config` shows one.
 #[test]
 fn the_gateway_clients_go_direct_and_bound_every_phase() {
+    let home = HomeSandbox::new();
+    // `NO_PROXY=*` keeps the pin inert for a test outside the sandbox lock
+    // whose lazily built shared agent reads the env while the pin stands: its
+    // proxy then excludes every host.
+    let _proxy = EnvPin::new(
+        &home,
+        &[
+            ("ALL_PROXY", Some(OsStr::new("http://127.0.0.1:9"))),
+            ("NO_PROXY", Some(OsStr::new("*"))),
+        ],
+    );
     for (response, global) in [(2u64, 6u64), (20, 24)] {
         let preset = ureq::Agent::config_builder()
             .proxy(Some(ureq::Proxy::new("http://127.0.0.1:9").expect("proxy")));
@@ -5004,4 +5042,10 @@ fn the_gateway_clients_go_direct_and_bound_every_phase() {
         );
         assert!(agent.config().proxy().is_none());
     }
+    // The daemon derives its probe deadlines from the constant, so the built
+    // bound and the constant must stay one number.
+    assert_eq!(
+        health_agent().config().timeouts().global,
+        Some(HEALTH_PROBE_TIMEOUT)
+    );
 }
