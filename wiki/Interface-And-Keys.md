@@ -37,6 +37,8 @@ Codex accounts ([Codex](Codex)) sit under the Claude Code rows in a section head
 | <kbd>q</kbd> | step back, or arm quit at the top level; press again to confirm |
 | <kbd>ctrl</kbd>+<kbd>c</kbd> | quit from anywhere |
 
+Toasts stack in the top-right corner, at most three lines each: a longer message ends its third line in `…`.
+
 ### Tab-dependent
 
 | Key | Behavior |
@@ -75,7 +77,7 @@ Entries above the rule act on the account named in the menu's title bar; entries
 
 The usage tab claims <kbd>n</kbd> for the selected account's note: a free-form text block shown in full on the tab under `notes:` (`press n to add notes` while the account has none). <kbd>⏎</kbd> saves, <kbd>esc</kbd> cancels, <kbd>⌃j</kbd> starts a new line. The note is stored as `profiles/<name>/note.txt` (see [Configuration](Configuration#storage-layout)), so it follows the account on rename and goes with it on delete; everywhere else <kbd>n</kbd> still starts a new account.
 
-`start daemon` shows while no daemon runs and, once you confirm, starts `clauth daemon` in the background, detached from the TUI: it keeps running after you quit the TUI or close its terminal, and writes its log to `~/.clauth/daemon.log`. It starts the plain daemon, so it serves no REST API; for the clauth app, run `clauth daemon --listen` yourself ([Daemon](Daemon)). `stop daemon` shows while one runs and stops it the way `clauth daemon --replace` does, taking the shunt gateway and every enabled proxy down with it (a daemon that takes over at once, such as a standby, runs its own). Neither shows while one of them is still working; a toast reports how it went.
+`start daemon` shows while no daemon runs and, once you confirm, starts `clauth daemon` in the background, detached from the TUI: it keeps running after you quit the TUI or close its terminal, and writes its log to `~/.clauth/daemon.log`. If a daemon came up elsewhere while the confirm was open, it starts nothing and says `daemon already running`. It starts the plain daemon, so it serves no REST API; for the clauth app, run `clauth daemon --listen` yourself ([Daemon](Daemon)). `stop daemon` shows while one runs and stops it the way `clauth daemon --replace` does, taking the shunt gateway and every enabled proxy down with it (a daemon that takes over at once, such as a standby, runs its own). Neither shows while one of them is still working; a toast reports how it went.
 
 `stop shunt` shows while the daemon runs the shunt gateway and its status is fresh. It asks first, naming how many live sessions run on an account whose base URL points at the gateway when any do and clauth can count them, then holds the gateway off until the daemon next restarts; it never changes the card's `enabled` setting. `start shunt` shows in four cases: with no gateway adopted it opens the Services tab on the `shunt` card, on its `f  adopt config` line when the card offers one; with the gateway disabled it lands on the card's `enabled` row; with no daemon running it asks to start the daemon (hidden while a daemon start or stop is still working); and on a held gateway it lifts the hold. In any other state, and while a shunt action is still working, neither shows. A pick whose entry no longer applies, because the gateway changed since the menu opened, says so and does nothing.
 
