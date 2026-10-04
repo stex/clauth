@@ -688,6 +688,37 @@ fn detail_line_truncates_paths_and_prose_to_the_pane() {
     );
 }
 
+/// An outdated plugin version is the reason its row warns, so its value takes
+/// the warning tone the install and mcp entry problems take (`installed  no`,
+/// `mcp entry  not registered`); a current version stays body text. The line
+/// carries the same mark the production version line is built from; that copy
+/// itself is pinned by equality in `tests/inline/tui_app.rs`.
+#[test]
+fn an_outdated_plugin_version_reads_in_the_warning_tone() {
+    let value_styles = |text: &str| {
+        super::detail_line(text, 7, 80)
+            .spans
+            .iter()
+            .skip(1)
+            .map(|s| s.style)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        value_styles(&format!(
+            "version: 0.9.0 ({} {})",
+            super::OUTDATED_PLUGIN_MARK,
+            env!("CARGO_PKG_VERSION")
+        )),
+        vec![super::theme::warning()],
+        "the outdated version warns"
+    );
+    assert_eq!(
+        value_styles(&format!("version: {}", env!("CARGO_PKG_VERSION"))),
+        vec![super::theme::body()],
+        "a current version stays body text"
+    );
+}
+
 /// The shunt row's `config` and `binary` path keys truncate on the same shared
 /// middle-ellipsis helper, by equality.
 #[test]

@@ -145,16 +145,20 @@ fn bare_app() -> App {
     })
 }
 
-/// Seed CC's plugin registry with one clauth install record at `scope`.
-fn write_plugin_install(scope: &str) {
+/// Seed CC's plugin registry with one clauth install record at `scope`; the
+/// record carries `version` only when one is given, since the registry's
+/// version field is optional.
+fn write_plugin_install(scope: &str, version: Option<&str>) {
     let path = crate::profile::claude_dir()
         .expect("claude dir")
         .join("plugins")
         .join("installed_plugins.json");
     std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-    let body = serde_json::json!({
-        "plugins": { "clauth@clauth": [{ "scope": scope, "version": "0.1.0" }] }
-    });
+    let mut record = serde_json::json!({ "scope": scope });
+    if let Some(version) = version {
+        record["version"] = serde_json::Value::from(version);
+    }
+    let body = serde_json::json!({ "plugins": { "clauth@clauth": [record] } });
     std::fs::write(&path, serde_json::to_vec(&body).expect("serialize")).expect("write");
 }
 
@@ -287,7 +291,7 @@ fn the_plugin_check_health_is_the_worst_of_the_four() {
     assert_eq!(check.fix, Some(super::ServiceFix::InstallPlugin));
 
     // A user-scope install wires the server and installs globally: ok, no fix.
-    write_plugin_install("user");
+    write_plugin_install("user", Some(env!("CARGO_PKG_VERSION")));
     let check = super::plugin_check(
         Some(&path),
         Some(Some("1.2.3".to_string())),
@@ -316,7 +320,7 @@ fn the_plugin_check_folds_the_readouts_and_lists_problems_in_order() {
     use crate::plugin_probe::McpProbe;
     let _home = crate::testutil::HomeSandbox::new();
     let path = std::path::PathBuf::from("/usr/bin/clauth");
-    write_plugin_install("local");
+    write_plugin_install("local", Some("0.1.0"));
 
     let check = super::plugin_check(
         Some(&path),
@@ -414,7 +418,7 @@ fn the_plugin_check_reads_a_global_wire_as_wired() {
 fn the_plugin_check_reads_a_user_install_as_healthy() {
     use crate::plugin_probe::McpProbe;
     let _home = crate::testutil::HomeSandbox::new();
-    write_plugin_install("user");
+    write_plugin_install("user", Some(env!("CARGO_PKG_VERSION")));
     let check = super::plugin_check(
         Some(std::path::Path::new("/usr/bin/clauth")),
         Some(Some("1.2.3".to_string())),
@@ -431,6 +435,127 @@ fn the_plugin_check_reads_a_user_install_as_healthy() {
         "no problems on a healthy global install"
     );
     assert!(check.fix.is_none());
+}
+
+/// Claude Code caches the plugin by its manifest version, so a user install
+/// older than this clauth keeps serving the old tree until something
+/// reinstalls it. The version line names both versions, the row warns, and the
+/// install fix (which updates it) closes the install group with no
+/// explanation line. Pinned whole, by equality. `0.9.0` sorts after `0.17.0`
+/// as text, so at that version only a numeric comparison reads it older (the
+/// comparison itself is pinned in `tests/inline/update.rs`).
+#[test]
+fn the_plugin_check_warns_on_a_user_install_older_than_this_clauth() {
+    use crate::plugin_probe::McpProbe;
+    let _home = crate::testutil::HomeSandbox::new();
+    write_plugin_install("user", Some("0.9.0"));
+    let check = super::plugin_check(
+        Some(std::path::Path::new("/usr/bin/clauth")),
+        Some(Some("1.2.3".to_string())),
+        Some(McpProbe::Ok),
+    );
+    let data_line = format!(
+        "data: {}",
+        crate::profile::clauth_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "\u{2014}".to_string())
+    );
+    assert_eq!(
+        check.detail,
+        vec![
+            "installed: yes (user)".to_string(),
+            format!(
+                "version: 0.9.0 (this clauth is {})",
+                env!("CARGO_PKG_VERSION")
+            ),
+            "f  install plugin".to_string(),
+            String::new(),
+            "mcp entry: registered".to_string(),
+            "mcp server: ok".to_string(),
+            "mcp source: plugin install (user)".to_string(),
+            String::new(),
+            "claude: 1.2.3".to_string(),
+            "path: /usr/bin/clauth".to_string(),
+            data_line,
+        ],
+        "an outdated install names both versions and offers the install, by equality"
+    );
+    assert_eq!(
+        check.health,
+        super::Health::Warn,
+        "an outdated install warns"
+    );
+    assert_eq!(
+        check.fix,
+        Some(super::ServiceFix::InstallPlugin),
+        "list `f` updates the outdated install"
+    );
+    assert_eq!(
+        check
+            .problems
+            .iter()
+            .map(|p| (p.line, super::fix_verb(&p.fix)))
+            .collect::<Vec<_>>(),
+        vec![(2, "install plugin")],
+        "the install fix is the one problem, on its own `f` line"
+    );
+}
+
+/// Only an OLDER user install warns. One at this clauth's own version is
+/// current; a newer one is a newer clauth's install, which agentgear never
+/// downgrades, so the fix could change nothing; a missing or unparseable
+/// version proves nothing either way. Each keeps the healthy row and a plain
+/// version line.
+#[test]
+fn the_plugin_check_reads_a_user_install_that_is_not_older_as_healthy() {
+    use crate::plugin_probe::McpProbe;
+    let cases = [
+        (
+            Some(env!("CARGO_PKG_VERSION")),
+            Some(format!("version: {}", env!("CARGO_PKG_VERSION"))),
+            "this clauth's own version",
+        ),
+        (
+            Some("999.0.0"),
+            Some("version: 999.0.0".to_string()),
+            "a newer clauth's install",
+        ),
+        (
+            Some("dev"),
+            Some("version: dev".to_string()),
+            "an unparseable version",
+        ),
+        (None, None, "a record with no version"),
+    ];
+    for (version, version_line, case) in cases {
+        let _home = crate::testutil::HomeSandbox::new();
+        write_plugin_install("user", version);
+        let check = super::plugin_check(
+            Some(std::path::Path::new("/usr/bin/clauth")),
+            Some(Some("1.2.3".to_string())),
+            Some(McpProbe::Ok),
+        );
+        assert_eq!(
+            check.health,
+            super::Health::Ok,
+            "{case}: stays healthy: {:?}",
+            check.detail
+        );
+        assert!(
+            check.problems.is_empty() && check.fix.is_none(),
+            "{case}: offers no fix: {:?}",
+            check.detail
+        );
+        assert_eq!(
+            check
+                .detail
+                .iter()
+                .find(|l| l.starts_with("version"))
+                .cloned(),
+            version_line,
+            "{case}: the version line reads plain"
+        );
+    }
 }
 
 /// The builder's fresh-box plugin detail (nothing installed, no `mcpServers`
@@ -1353,7 +1478,7 @@ fn plugin_check_names_the_user_scope_record_when_one_exists() {
     let body = serde_json::json!({
         "plugins": { "clauth@clauth": [
             { "scope": "local", "version": "0.14.1" },
-            { "scope": "user", "version": "0.15.0" }
+            { "scope": "user", "version": env!("CARGO_PKG_VERSION") }
         ] }
     });
     std::fs::write(&path, serde_json::to_vec(&body).expect("serialize")).expect("write");
@@ -1377,7 +1502,7 @@ fn plugin_check_names_the_user_scope_record_when_one_exists() {
         check
             .detail
             .iter()
-            .any(|line| line.starts_with("version: 0.15.0")),
+            .any(|line| *line == format!("version: {}", env!("CARGO_PKG_VERSION"))),
         "the live user row's version must win: {:?}",
         check.detail
     );
@@ -1424,6 +1549,18 @@ fn the_install_fix_opens_a_default_cancel_confirm_before_installing() {
     assert!(
         matches!(state.on_confirm, super::ConfirmAction::InstallPlugin),
         "the modal must run the install on confirm"
+    );
+    // The install re-enables a disabled plugin, and the outdated-install warn
+    // reaches a disabled one too, so the confirm says where the plugin ends up.
+    assert_eq!(
+        (state.message.as_str(), state.detail.as_deref()),
+        (
+            "install the clauth plugin into claude code?",
+            Some(
+                "runs claude's own plugin installer at user scope and turns the plugin on; your other plugins and settings are untouched."
+            ),
+        ),
+        "the install confirm's copy, by equality"
     );
     assert!(app.toasts.is_empty(), "arming the fix must run nothing yet");
     assert!(

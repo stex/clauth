@@ -5119,7 +5119,7 @@ fn apply_service_fix(app: &mut App) {
             app.open_modal(Modal::Confirm(ConfirmState {
                 message: "install the clauth plugin into claude code?".to_string(),
                 detail: Some(
-                    "runs claude's own plugin installer at user scope; your other plugins and settings are untouched."
+                    "runs claude's own plugin installer at user scope and turns the plugin on; your other plugins and settings are untouched."
                         .to_string(),
                 ),
                 choice: false,
@@ -6788,6 +6788,10 @@ pub(crate) fn escape_control(s: &str) -> String {
         .collect()
 }
 
+/// The clause an outdated plugin install's version line carries; the services
+/// renderer tones that line by it, so the copy and its color share one spelling.
+pub(crate) const OUTDATED_PLUGIN_MARK: &str = "this clauth is";
+
 /// The `plugin` row: one detail holding the plugin install, the mcpServers
 /// entry (+ the `r`-gated start probe), then the Claude Code version, clauth
 /// on PATH and the data dir, a blank line between the three groups. The
@@ -6814,8 +6818,8 @@ fn plugin_check(
     let plugin_global = records.iter().any(|r| r.scope.as_deref() == Some("user"));
 
     // plugin install record — installed-only verdict (CC exposes no clean
-    // per-scope "enabled" boolean, so the row reports presence + scope, not
-    // enabled/disabled).
+    // per-scope "enabled" boolean, so the row reports presence, scope and
+    // version, not enabled/disabled).
     let marketplace = probe::marketplace_known();
     // The operative record is the `user`-scope install when one exists; a stale
     // project/local row that sorts first must not name the install beside a
@@ -6826,9 +6830,23 @@ fn plugin_check(
         .or_else(|| records.first());
     if let Some(record) = record_for_check {
         let scope = record.scope.as_deref();
+        // Claude Code caches the plugin by its manifest version, so a user
+        // install older than this binary keeps serving the old tree until it
+        // is reinstalled, and the install fix updates it. A newer install is a
+        // newer clauth's, which the install never downgrades.
+        let this_version = crate::update::CURRENT_VERSION;
+        let outdated = plugin_global
+            && record
+                .version
+                .as_deref()
+                .is_some_and(|installed| crate::update::is_newer(this_version, installed));
         detail.push(format!("installed: yes ({})", scope.unwrap_or("?")));
         if let Some(version) = &record.version {
-            detail.push(format!("version: {version}"));
+            detail.push(if outdated {
+                format!("version: {version} ({OUTDATED_PLUGIN_MARK} {this_version})")
+            } else {
+                format!("version: {version}")
+            });
         }
         if let Some(sha) = &record.git_commit_sha {
             detail.push(format!(
@@ -6848,7 +6866,15 @@ fn plugin_check(
         if let Some(repo) = marketplace.as_ref().and_then(|m| m.repo.as_ref()) {
             detail.push(format!("marketplace: {repo}"));
         }
-        if plugin_global {
+        if outdated {
+            let line = detail.len();
+            detail.push(fix_line(&ServiceFix::InstallPlugin));
+            problems.push(Problem {
+                line,
+                fix: ServiceFix::InstallPlugin,
+            });
+            health = worst(health, Health::Warn);
+        } else if plugin_global {
             health = worst(health, Health::Ok);
         } else {
             detail.push("installed for this project only, not global".to_string());

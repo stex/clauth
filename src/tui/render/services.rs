@@ -23,8 +23,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use super::super::app::{
-    App, Check, HERDR_OPTIONS, Health, HerdrOption, InputState, ServiceFix, ServicesFocus,
-    ShuntFocus, escape_control, herdr_config_writable, parse_herdr_tag_secs,
+    App, Check, HERDR_OPTIONS, Health, HerdrOption, InputState, OUTDATED_PLUGIN_MARK, ServiceFix,
+    ServicesFocus, ShuntFocus, escape_control, herdr_config_writable, parse_herdr_tag_secs,
 };
 use super::super::theme;
 use super::format::{middle_truncate, spinner_frame};
@@ -901,6 +901,8 @@ fn value_tone(key: &str, value: &str) -> Style {
         ("sidebar", "templated") => theme::success(),
         ("sidebar", "not") => theme::warning(),
         ("state", "not") => theme::dim(),
+        // An install older than this clauth: the reason the plugin row warns.
+        ("version", _) if value.contains(OUTDATED_PLUGIN_MARK) => theme::warning(),
         _ => theme::body(),
     }
 }
