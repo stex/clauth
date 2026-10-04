@@ -158,7 +158,7 @@ Four rows: `shunt`, `delegates`, `plugin`, and `herdr` (shown once herdr resolve
 
 | Verb | When it appears |
 |------|-----------------|
-| `install plugin` | the plugin reads not installed, or installed for this project only; installs at user scope |
+| `install plugin` | the plugin reads not installed, installed for this project only, or installed at a version older than this clauth (its `version` line then names both, `0.16.0 (this clauth is 0.17.0)`); installs at user scope, which updates an older install, and turns the plugin on |
 | `wire mcp server` | the `mcpServers` entry is missing, project-local only, or drifted off the current launch line; writes the clauth entry into `~/.claude.json` |
 
 To install the plugin: select the `plugin` row, press <kbd>f</kbd>, confirm.
