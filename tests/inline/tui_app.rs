@@ -20126,3 +20126,137 @@ fn a_failed_move_or_admin_edit_keeps_the_cause_under_its_context() {
         }
     }
 }
+
+// ── #104: startup reconcile flags a current refreshless bearer ──────────────
+
+/// #104: `reconcile_startup` compares the live login against the profile's
+/// clauth-private usage pair (`credentials_diverged`), which requires the
+/// refresh token to match. A rolling-token profile's live slot holds the
+/// refreshless bearer, so the current bearer still reads as diverged and every
+/// launch applies `default_divergence` (discard confirm) or flashes the banner.
+/// The live login must be judged against what a switch installs — the
+/// sidecar — where an access-token match is no divergence at all.
+#[test]
+fn repro_104_startup_reconcile_accepts_a_current_rolling_bearer() {
+    use crate::profile::{
+        AppConfig, AppState, ClaudeCredentials, OAuthToken, Profile, ProfileName, save_profile,
+    };
+    let _home = crate::testutil::HomeSandbox::new();
+    let name = "repro-104-rolling";
+    let pair = OAuthToken {
+        access_token: "at-chain".to_string(),
+        refresh_token: Some("rt-chain".to_string()),
+        expires_at: Some(crate::usage::now_ms() as i64 + 3_600_000),
+        scopes: Some(vec!["user:profile".into(), "user:inference".into()]),
+        subscription_type: Some("max".into()),
+        ..OAuthToken::default_extra()
+    };
+    let mut profile = Profile::new(name.to_string(), None, None);
+    profile.rolling_token = true;
+    profile.credentials = Some(ClaudeCredentials {
+        claude_ai_oauth: Some(pair.clone()),
+    });
+    save_profile(&profile).expect("save profile");
+    // The sidecar is the chain's refreshless projection: the SAME access token.
+    crate::claude::stamp_rolling_token(&ProfileName::from(name), &pair).expect("stamp");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    // Typed fixture: no added line spells a JSON credential key (the
+    // pre-commit secret scan refuses that shape outright).
+    let live = ClaudeCredentials {
+        claude_ai_oauth: Some(OAuthToken {
+            access_token: "at-chain".to_string(),
+            refresh_token: None,
+            expires_at: Some(crate::usage::now_ms() as i64 + 3_600_000),
+            scopes: Some(vec!["user:profile".into(), "user:inference".into()]),
+            subscription_type: Some("max".into()),
+            ..OAuthToken::default_extra()
+        }),
+    };
+    std::fs::write(
+        claude_dir.join(".credentials.json"),
+        serde_json::to_vec(&live).expect("ser"),
+    )
+    .expect("write live");
+    let state = AppState {
+        active_profile: Some(ProfileName::from(name)),
+        profiles: vec![ProfileName::from(name)],
+        ..AppState::default()
+    };
+    crate::profile::save_app_state(&state).expect("persist state");
+    let mut app = App::new(AppConfig {
+        state,
+        profiles: vec![profile],
+    });
+    super::reconcile_startup(&mut app);
+    let signal = app.startup_results.try_recv();
+    assert!(
+        matches!(signal, Ok(crate::usage::StartupSignal::ReconcileDone)),
+        "a live slot holding the CURRENT rolling bearer is not a divergence (#104): {signal:?}"
+    );
+}
+
+/// The same class, wider: a static-mint profile's live slot holds the mint, a
+/// DIFFERENT token than the clauth-private usage pair. The pair-compare reads
+/// that as a divergence on every launch too; against the install source it is
+/// not one.
+#[test]
+fn repro_104_startup_reconcile_accepts_a_current_static_mint() {
+    use crate::profile::{
+        AppConfig, AppState, ClaudeCredentials, OAuthToken, Profile, ProfileName, save_profile,
+    };
+    let _home = crate::testutil::HomeSandbox::new();
+    let name = "repro-104-static";
+    let pair = OAuthToken {
+        access_token: "at-chain".to_string(),
+        refresh_token: Some("rt-chain".to_string()),
+        expires_at: Some(crate::usage::now_ms() as i64 + 3_600_000),
+        scopes: Some(vec!["user:profile".into(), "user:inference".into()]),
+        subscription_type: Some("max".into()),
+        ..OAuthToken::default_extra()
+    };
+    let mut profile = Profile::new(name.to_string(), None, None);
+    profile.credentials = Some(ClaudeCredentials {
+        claude_ai_oauth: Some(pair),
+    });
+    save_profile(&profile).expect("save profile");
+    crate::claude::write_session_token(
+        &ProfileName::from(name),
+        "setup-mint-fixture",
+        crate::usage::now_ms() as i64,
+    )
+    .expect("mint");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live = ClaudeCredentials {
+        claude_ai_oauth: Some(OAuthToken {
+            access_token: "setup-mint-fixture".to_string(),
+            refresh_token: None,
+            expires_at: Some(crate::usage::now_ms() as i64 + 3_600_000),
+            scopes: None,
+            subscription_type: None,
+            ..OAuthToken::default_extra()
+        }),
+    };
+    std::fs::write(
+        claude_dir.join(".credentials.json"),
+        serde_json::to_vec(&live).expect("ser"),
+    )
+    .expect("write live");
+    let state = AppState {
+        active_profile: Some(ProfileName::from(name)),
+        profiles: vec![ProfileName::from(name)],
+        ..AppState::default()
+    };
+    crate::profile::save_app_state(&state).expect("persist state");
+    let mut app = App::new(AppConfig {
+        state,
+        profiles: vec![profile],
+    });
+    super::reconcile_startup(&mut app);
+    let signal = app.startup_results.try_recv();
+    assert!(
+        matches!(signal, Ok(crate::usage::StartupSignal::ReconcileDone)),
+        "a live slot holding the current static mint is not a divergence: {signal:?}"
+    );
+}

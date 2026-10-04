@@ -3241,6 +3241,13 @@ pub(crate) fn snapshot_active_credentials(config: &mut AppConfig) -> Result<()> 
 /// login.
 pub(crate) fn adopt_first_login(config: &mut AppConfig, active: &ProfileName) -> Result<()> {
     with_state_lock(|held| {
+        // Re-verified under the same hold the snapshot sink runs in: the
+        // startup cascade checks the predicate unlocked, and a switch landing
+        // in between must not be overwritten by a boot adopt.
+        anyhow::ensure!(
+            is_first_login(active)?,
+            "refusing to adopt for '{active}': the live login is no longer a first login"
+        );
         snapshot_active_credentials_unchecked(config, active, held)?;
         anyhow::ensure!(
             install_source_path(active)?.exists(),
@@ -3373,21 +3380,6 @@ pub(crate) fn force_link_profile_credentials(name: &ProfileName) -> Result<()> {
         }
         Ok(())
     })
-}
-
-/// True when both sides have an OAuth block and access or refresh token differs.
-/// Missing data on either side returns false (snapshot/skip is safer than guessing).
-pub(crate) fn credentials_diverged(
-    stored: Option<&ClaudeCredentials>,
-    live: Option<&ClaudeCredentials>,
-) -> bool {
-    let Some(stored) = stored.and_then(|c| c.claude_ai_oauth.as_ref()) else {
-        return false;
-    };
-    let Some(live) = live.and_then(|c| c.claude_ai_oauth.as_ref()) else {
-        return false;
-    };
-    stored.access_token != live.access_token || stored.refresh_token != live.refresh_token
 }
 
 /// Replace the symlink at `.credentials.json` with a regular file (same bytes).

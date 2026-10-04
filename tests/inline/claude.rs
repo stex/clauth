@@ -15,50 +15,23 @@ fn creds(access: &str, refresh: Option<&str>) -> ClaudeCredentials {
     }
 }
 
+/// #104: a refreshless live login with the SAME access token as a stored
+/// pair is no divergence — the regular-file content test compares access
+/// tokens alone, so a refresh-only difference must read LinkedTo.
 #[test]
-fn diverged_returns_false_when_either_side_missing() {
-    let c = creds("a", Some("r"));
-    assert!(!credentials_diverged(None, Some(&c)));
-    assert!(!credentials_diverged(Some(&c), None));
-    assert!(!credentials_diverged(None, None));
-}
-
-#[test]
-fn diverged_returns_false_when_tokens_match() {
-    let a = creds("access-1", Some("refresh-1"));
-    let b = creds("access-1", Some("refresh-1"));
-    assert!(!credentials_diverged(Some(&a), Some(&b)));
-}
-
-#[test]
-fn diverged_returns_true_when_access_token_differs() {
-    let a = creds("access-1", Some("refresh-1"));
-    let b = creds("access-2", Some("refresh-1"));
-    assert!(credentials_diverged(Some(&a), Some(&b)));
-}
-
-#[test]
-fn diverged_returns_true_when_refresh_token_differs() {
-    let a = creds("access-1", Some("refresh-1"));
-    let b = creds("access-1", Some("refresh-2"));
-    assert!(credentials_diverged(Some(&a), Some(&b)));
-}
-
-#[test]
-fn diverged_returns_true_when_refresh_token_disappears() {
-    let a = creds("access-1", Some("refresh-1"));
-    let b = creds("access-1", None);
-    assert!(credentials_diverged(Some(&a), Some(&b)));
-}
-
-#[test]
-fn diverged_returns_false_when_oauth_block_missing_on_one_side() {
-    let with = creds("a", Some("r"));
-    let without = ClaudeCredentials {
-        claude_ai_oauth: None,
-    };
-    assert!(!credentials_diverged(Some(&with), Some(&without)));
-    assert!(!credentials_diverged(Some(&without), Some(&with)));
+fn classify_reads_a_refresh_only_difference_as_linked_to() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let link = tmp.path().join(".credentials.json");
+    let expected = tmp.path().join("profile.json");
+    let live = creds("access-1", None);
+    let stored = creds("access-1", Some("refresh-1"));
+    std::fs::write(&link, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    std::fs::write(&expected, serde_json::to_vec(&stored).expect("ser")).expect("write stored");
+    assert_eq!(
+        classify_link_at(&link, &expected).expect("classify"),
+        LinkState::LinkedTo,
+        "the content test is the access token alone"
+    );
 }
 
 #[test]

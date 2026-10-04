@@ -33,9 +33,9 @@ use crate::actions::{
 };
 use crate::claude::{
     LinkState, adopt_first_login, classify_credentials_link, claude_settings_env_keys,
-    credentials_diverged, detach_credentials_link, force_link_profile_credentials,
-    force_snapshot_active_credentials, is_first_login, link_profile_credentials,
-    live_credentials_are_shell, read_claude_credentials, snapshot_active_credentials,
+    detach_credentials_link, force_link_profile_credentials, force_snapshot_active_credentials,
+    is_first_login, link_profile_credentials, live_credentials_are_shell, read_claude_credentials,
+    snapshot_active_credentials,
 };
 use crate::daemon::gateway::{Answerer, GatewayState};
 use crate::fallback::{
@@ -4056,9 +4056,12 @@ impl App {
 
 // ── Startup reconciliation ────────────────────────────────────────────────────
 
-/// Startup credential reconciliation, non-blocking. Compares the live
-/// `~/.claude/.credentials.json` to the active profile's stored creds inline.
-/// No divergence → snapshot + `ReconcileDone` immediately.
+/// Startup credential reconciliation, non-blocking. Judges the live
+/// `~/.claude/.credentials.json` through the SAME cascade the 1Hz poll uses
+/// ([`reconcile_decision`]): against the install source, never the
+/// clauth-private usage pair — a refreshless live login (a rolling bearer, a
+/// static mint) is no divergence (#104). No divergence → snapshot +
+/// `ReconcileDone` immediately.
 ///
 /// On divergence we never probe the stored chain via OAuth refresh — a refresh
 /// *spends* the single-use refresh token server-side and would rotate the stored
@@ -4072,28 +4075,20 @@ pub(super) fn reconcile_startup(app: &mut App) {
         return;
     };
 
-    // Read live credentials under the state lock to avoid torn snapshots.
-    let live = with_state_lock(|_held| Ok(read_claude_credentials().ok().flatten()))
-        .ok()
-        .flatten();
-    let diverged = {
-        let cfg = app.config();
-        let stored = cfg.find(&active).and_then(|p| p.credentials.as_ref());
-        credentials_diverged(stored, live.as_ref())
-    };
+    let verdict = reconcile_decision(app, &active);
 
-    if !diverged {
+    if matches!(verdict, DivergenceVerdict::Clean) {
         let mut cfg = app.config();
         let _ = snapshot_active_credentials(&mut cfg);
-        let _ = app.startup_sender.send(StartupSignal::ReconcileDone);
-        return;
     }
-
-    // Diverged: hand the verdict to the user. No network, no FS write here.
     let _ = app
         .startup_sender
-        .send(StartupSignal::ReconcileNeedsPrompt {
-            active: active.to_string(),
+        .send(if matches!(verdict, DivergenceVerdict::Clean) {
+            StartupSignal::ReconcileDone
+        } else {
+            StartupSignal::ReconcileNeedsPrompt {
+                active: active.to_string(),
+            }
         });
 }
 
@@ -13739,8 +13734,8 @@ fn maybe_spawn_bootstrap(app: &mut App) {
 }
 
 /// 1Hz check: keep [`App::divergence_pending`] (the non-blocking banner) in
-/// sync with whether `.credentials.json` matches the active profile's stored
-/// creds. Never pushes the modal — a divergence must not lock the whole TUI out
+/// sync with whether the live login matches what a switch to the active
+/// profile installs (the install source). Never pushes the modal — a divergence must not lock the whole TUI out
 /// of browsing usage; <kbd>d</kbd> opens the resolver on demand, and
 /// switch-shaped actions raise it themselves when resolution is actually
 /// required. First-login adoption resolves automatically here, as does a
@@ -13773,23 +13768,56 @@ fn poll_credentials_divergence(app: &mut App) {
         return;
     };
     if !matches!(
-        classify_credentials_link(&active).ok(),
+        reconcile_decision(app, &active),
+        DivergenceVerdict::NeedsPrompt
+    ) {
+        return;
+    }
+    resolve_or_note_divergence(app, active.as_ref());
+}
+
+/// What the shared divergence cascade ([`reconcile_decision`]) makes of the
+/// live slot.
+enum DivergenceVerdict {
+    /// Linked, adopted, or already stored — no divergence to resolve.
+    Clean,
+    /// A logged-out shell. The poll exempts it outright (no nag, no banner);
+    /// the startup reconcile treats it as a divergence so a configured
+    /// `default_divergence` Overwrite still performs the boot heal (relink
+    /// the stored login over the shell) — the shipped pin's behavior.
+    Shell,
+    /// A genuine divergence — the user's verdict is needed.
+    NeedsPrompt,
+}
+
+/// The ONE divergence decision, shared by the startup reconcile and the 1Hz
+/// poll (#104): the live login is judged against what a switch INSTALLS
+/// (the install source — the sidecar for split profiles), never the
+/// clauth-private usage pair, so a refreshless live login (a rolling bearer,
+/// a static mint) is no divergence. Side effects: a first-login adoption runs
+/// here; exempt states clear the banner. A logged-out shell is reported as
+/// its own verdict so the two callers can disagree on it (see
+/// [`DivergenceVerdict::Shell`]).
+fn reconcile_decision(app: &mut App, active: &ProfileName) -> DivergenceVerdict {
+    if !matches!(
+        classify_credentials_link(active).ok(),
         Some(LinkState::Diverged)
     ) {
         app.divergence_pending = None; // resolved; a later divergence re-flags
-        return;
+        return DivergenceVerdict::Clean;
     }
-    // A logged-out shell is nothing to resolve: don't nag, and never let a
-    // `default_divergence` Overwrite capture its blank tokens over the stored chain.
+    // A logged-out shell is nothing the poll must resolve: don't nag, and
+    // never let a `default_divergence` Overwrite capture its blank tokens
+    // over the stored chain.
     if live_credentials_are_shell() {
         app.divergence_pending = None;
-        return;
+        return DivergenceVerdict::Shell;
     }
     // First login on a credential-less profile: adopt silently, don't prompt.
-    if is_first_login(&active).unwrap_or(false) {
+    if is_first_login(active).unwrap_or(false) {
         let result = {
             let mut cfg = app.config();
-            adopt_first_login(&mut cfg, &active)
+            adopt_first_login(&mut cfg, active)
         };
         match result {
             Ok(()) => {
@@ -13797,14 +13825,14 @@ fn poll_credentials_divergence(app: &mut App) {
                 // AUTH-1: an adopted first login is a fresh login — lift a
                 // standing auth_broken quarantine like the sibling fresh-login
                 // paths do.
-                oauth::mark_auth_broken(&app.config, &active, false);
+                oauth::mark_auth_broken(&app.config, active, false);
                 app.last_reload_fp = reload_fingerprint();
                 app.refresh_unsaved_live_login();
                 app.toast(ToastKind::Success, format!("saved login into '{active}'"));
             }
             Err(e) => app.toast(ToastKind::Danger, format!("adopt failed\n{e}")),
         }
-        return;
+        return DivergenceVerdict::Clean;
     }
     // A login already saved in the active profile's store holds nothing unsaved —
     // the next switch re-installs it, losing no login — so it must not raise the
@@ -13812,11 +13840,11 @@ fn poll_credentials_divergence(app: &mut App) {
     // writes over it. The switch/defer gates apply the same exemption through
     // `live_diverged_and_unsaved`; the poll must adopt a first login before this
     // point, so it checks the predicate directly here instead.
-    if crate::claude::live_login_is_stored(&active) {
+    if crate::claude::live_login_is_stored(active) {
         app.divergence_pending = None;
-        return;
+        return DivergenceVerdict::Clean;
     }
-    resolve_or_note_divergence(app, active.as_ref());
+    DivergenceVerdict::NeedsPrompt
 }
 
 /// Apply the configured `default_divergence`, or flag the non-blocking banner
