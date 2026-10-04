@@ -1383,6 +1383,18 @@ pub(crate) fn apply_rotated_tokens_locked(
     let mut split_gate_prev: Option<String> = None;
     #[cfg(target_os = "macos")]
     let mut split_gate_old: Option<String> = None;
+    // #104: entry-time install-source bearer, captured BEFORE the rotation
+    // persists — what the file-layer follower's changed-check and recognition
+    // candidates read the pre-rotation content against. Stable: every caller
+    // holds this profile's RotationGuard across the function.
+    let pre_hook_install_access = crate::claude::install_source_path(name)
+        .ok()
+        .and_then(|p| crate::profile::read_json_file::<crate::profile::ClaudeCredentials>(&p).ok())
+        .and_then(|c| {
+            c.access_token()
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+        });
     with_state_lock(|held| {
         // The profile may have been deleted or renamed out-of-process since this
         // caller's config was loaded (the single-fetcher holds a stale config
@@ -1492,6 +1504,64 @@ pub(crate) fn apply_rotated_tokens_locked(
             // serving until its real expiry, and every surface shows that
             // countdown honestly.
             logline!("clauth: rotated '{name}' but re-stamping session-token.json failed: {e:#}");
+        }
+        // #104: the file-layer live-slot follower, every OS — the live FILE is
+        // what Linux sessions read, and a regular file CC wrote must follow
+        // the rotation or it keeps serving the revoked login. Inside the
+        // flock, so the follower's read-modify-write serializes with link
+        // publishes. The rolling belt mirrors the macOS arm below: a
+        // rolling-flagged profile whose stamp failed has NO sidecar, and a
+        // rotating pair must never reach the live slot. A static mint's
+        // steady state is quiet (the unchanged-check reads it as nothing to
+        // follow).
+        if cfg.is_active(name)
+            && !(cfg.find(name).is_some_and(|p| p.rolling_token)
+                && crate::claude::session_token_status(name).is_none())
+        {
+            let incoming = match crate::claude::install_source_path(name).and_then(|path| {
+                crate::profile::read_json_file::<crate::profile::ClaudeCredentials>(&path)
+            }) {
+                Ok(creds) => Some(creds),
+                Err(e) => {
+                    logline!(
+                        "clauth: rotated '{name}' but re-reading the install source failed: \
+                         {e:#}. Live file left untouched; run `clauth {name}` to reinstall"
+                    );
+                    None
+                }
+            };
+            if let Some(creds) = incoming
+                && let Some(oauth) = creds.claude_ai_oauth.as_ref()
+                && pre_hook_install_access.as_deref() != Some(oauth.access_token.as_str())
+            {
+                let candidates: Vec<&str> = [
+                    pre_hook_install_access.as_deref(),
+                    Some(pre_rotation_access.as_str()),
+                    Some(oauth.access_token.as_str()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                match crate::claude::follow_live_file_login(&candidates, oauth) {
+                    Ok(crate::claude::LiveSlotFollow::NotOurs) => logline!(
+                        "clauth: rotated '{name}' but the live .credentials.json login is not \
+                         one clauth recognizes (an out-of-band re-login, or a follow write \
+                         that failed a rotation back). Live file left untouched; {}",
+                        crate::format::RESOLVE_IN_TUI
+                    ),
+                    Ok(crate::claude::LiveSlotFollow::Unreadable(e)) => logline!(
+                        "clauth: rotated '{name}' but the live .credentials.json could not be \
+                         parsed to check its login ({e}); live file left untouched. Run \
+                         `clauth {name}` to reinstall"
+                    ),
+                    Err(e) => logline!(
+                        "clauth: rotated '{name}' but following the live .credentials.json \
+                         failed: {e:#}. A running claude signs out when its old token expires; \
+                         run `clauth {name}` to reinstall"
+                    ),
+                    Ok(_) => {}
+                }
+            }
         }
         #[cfg(target_os = "macos")]
         if crate::keychain::enabled() && cfg.is_active(name) {

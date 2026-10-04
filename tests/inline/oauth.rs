@@ -6052,3 +6052,280 @@ fn repro_104_restamp_skips_a_parked_profile() {
         "a parked profile's re-stamp never touches the live slot"
     );
 }
+
+// ── #104: the rotation hook's follower legs ───────────────────────────────
+
+/// The rotation hook re-stamps a rolling profile's sidecar; a live regular
+/// file CC wrote must follow it too, or the revoked bearer keeps serving.
+#[test]
+fn repro_104_rotation_follows_a_regular_file_live_slot_for_a_rolling_profile() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-hook-rolling";
+    let mut config = rolling_config(name, Some("rt-old"), Some(past_expiry()));
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    let chain = config.profiles[0]
+        .credentials
+        .as_ref()
+        .and_then(|c| c.claude_ai_oauth.as_ref())
+        .expect("chain")
+        .clone();
+    crate::claude::stamp_rolling_token(&crate::profile::ProfileName::from(name), &chain)
+        .expect("stamp");
+    // The live slot is a regular file CC wrote, holding the pre-rotation bearer.
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let live = live_file_fixture(fed_bearer("at-old"));
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    apply_rotated_tokens_locked(
+        &handle,
+        &crate::profile::ProfileName::from(name),
+        TokenResponse {
+            access_token: "at-rotated".to_string(),
+            refresh_token: "rt-rotated".to_string(),
+            expires_in: 3600,
+            scope: None,
+        },
+    )
+    .expect("persist");
+    let oauth = sidecar_oauth(name).expect("sidecar");
+    assert_eq!(oauth.access_token, "at-rotated", "rotation fed the sidecar");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        raw["claudeAiOauth"]["accessToken"], "at-rotated",
+        "the live file follows the rotation (#104)"
+    );
+    assert!(
+        raw["claudeAiOauth"].get("refreshToken").is_none(),
+        "the sidecar projection is refreshless"
+    );
+    assert!(raw.get("mcpOAuth").is_some(), "blocks survive the follow");
+}
+
+/// The same leg, vanilla: no sidecar, so the live file follows the freshly
+/// rotated PAIR — refresh token included, the content a symlink would serve.
+#[test]
+fn repro_104_rotation_follows_a_regular_file_live_slot_for_a_vanilla_profile() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-hook-vanilla";
+    let mut config = oauth_config(name, Some("rt-old"), Some(past_expiry()));
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let live = live_file_fixture(OAuthToken {
+        access_token: "at-old".to_string(),
+        refresh_token: Some("rt-old".to_string()),
+        expires_at: Some(future_expiry()),
+        scopes: None,
+        subscription_type: None,
+        ..crate::profile::OAuthToken::default_extra()
+    });
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    apply_rotated_tokens_locked(
+        &handle,
+        &crate::profile::ProfileName::from(name),
+        TokenResponse {
+            access_token: "at-rotated".to_string(),
+            refresh_token: "rt-rotated".to_string(),
+            expires_in: 3600,
+            scope: None,
+        },
+    )
+    .expect("persist");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        raw["claudeAiOauth"]["accessToken"], "at-rotated",
+        "the live file follows the rotation (#104)"
+    );
+    assert_eq!(
+        raw["claudeAiOauth"]["refreshToken"], "rt-rotated",
+        "a vanilla live file follows the PAIR, refresh token included"
+    );
+    assert!(raw.get("mcpOAuth").is_some(), "blocks survive the follow");
+}
+
+/// A static mint's steady state is quiet: the rotation changes nothing the
+/// live slot should hold, and the follower must not rewrite the file.
+#[test]
+fn repro_104_rotation_leaves_a_static_mint_live_file_byte_identical() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-hook-static";
+    let mut config = oauth_config(name, Some("rt-old"), Some(past_expiry()));
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    crate::claude::write_session_token(
+        &crate::profile::ProfileName::from(name),
+        "setup-mint-fixture",
+        crate::usage::now_ms() as i64,
+    )
+    .expect("mint");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let live = live_file_fixture(OAuthToken {
+        access_token: "setup-mint-fixture".to_string(),
+        refresh_token: None,
+        expires_at: Some(future_expiry()),
+        scopes: None,
+        subscription_type: None,
+        ..crate::profile::OAuthToken::default_extra()
+    });
+    let live_bytes = serde_json::to_vec(&live).expect("ser");
+    std::fs::write(&live_path, &live_bytes).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    apply_rotated_tokens_locked(
+        &handle,
+        &crate::profile::ProfileName::from(name),
+        TokenResponse {
+            access_token: "at-rotated".to_string(),
+            refresh_token: "rt-rotated".to_string(),
+            expires_in: 3600,
+            scope: None,
+        },
+    )
+    .expect("persist");
+    assert_eq!(
+        std::fs::read(&live_path).expect("read"),
+        live_bytes,
+        "nothing changed for the live slot to follow; the file stays byte-identical"
+    );
+}
+
+/// The hook's is-active belt: rotating a PARKED profile never touches the
+/// live slot (which holds the active profile's login).
+#[test]
+fn repro_104_rotation_skips_a_parked_profile() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-hook-parked";
+    let config = rolling_config(name, Some("rt-old"), Some(past_expiry()));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    let chain = config.profiles[0]
+        .credentials
+        .as_ref()
+        .and_then(|c| c.claude_ai_oauth.as_ref())
+        .expect("chain")
+        .clone();
+    crate::claude::stamp_rolling_token(&crate::profile::ProfileName::from(name), &chain)
+        .expect("stamp");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let live = live_file_fixture(fed_bearer("at-old"));
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    apply_rotated_tokens_locked(
+        &handle,
+        &crate::profile::ProfileName::from(name),
+        TokenResponse {
+            access_token: "at-rotated".to_string(),
+            refresh_token: "rt-rotated".to_string(),
+            expires_in: 3600,
+            scope: None,
+        },
+    )
+    .expect("persist");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        raw["claudeAiOauth"]["accessToken"], "at-old",
+        "a parked profile's rotation never touches the live slot"
+    );
+}
+
+/// The hook's recognition gate: a live regular file holding a real re-login
+/// is left for the TUI, never overwritten by the rotation.
+#[test]
+fn repro_104_rotation_leaves_a_foreign_live_login_alone() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-hook-foreign";
+    let mut config = rolling_config(name, Some("rt-old"), Some(past_expiry()));
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    let chain = config.profiles[0]
+        .credentials
+        .as_ref()
+        .and_then(|c| c.claude_ai_oauth.as_ref())
+        .expect("chain")
+        .clone();
+    crate::claude::stamp_rolling_token(&crate::profile::ProfileName::from(name), &chain)
+        .expect("stamp");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let mut live = live_file_fixture(fed_bearer("at-foreign"));
+    // A real re-login carries a refresh token too.
+    live["claudeAiOauth"]["refreshToken"] = serde_json::Value::String("rt-foreign".into());
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    apply_rotated_tokens_locked(
+        &handle,
+        &crate::profile::ProfileName::from(name),
+        TokenResponse {
+            access_token: "at-rotated".to_string(),
+            refresh_token: "rt-rotated".to_string(),
+            expires_in: 3600,
+            scope: None,
+        },
+    )
+    .expect("persist");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        raw["claudeAiOauth"]["accessToken"], "at-foreign",
+        "a foreign live login is never overwritten by the rotation"
+    );
+}
+
+/// The arming rotation: no sidecar exists yet, the stamp creates it, and a
+/// live regular file holding the old PAIR follows to the refreshless
+/// projection.
+#[test]
+fn repro_104_arming_rotation_follows_the_old_pair_live_file() {
+    let _home = HomeSandbox::new();
+    let name = "test-repro-104-hook-arming";
+    let mut config = rolling_config(name, Some("rt-old"), Some(past_expiry()));
+    config.state.active_profile = Some(crate::profile::ProfileName::from(name));
+    crate::profile::save_profile(&config.profiles[0]).expect("save profile");
+    let claude_dir = crate::profile::claude_dir().expect("claude dir");
+    std::fs::create_dir_all(&claude_dir).expect("mkdir");
+    let live_path = claude_dir.join(".credentials.json");
+    let live = live_file_fixture(OAuthToken {
+        access_token: "at-old".to_string(),
+        refresh_token: Some("rt-old".to_string()),
+        expires_at: Some(future_expiry()),
+        scopes: None,
+        subscription_type: None,
+        ..crate::profile::OAuthToken::default_extra()
+    });
+    std::fs::write(&live_path, serde_json::to_vec(&live).expect("ser")).expect("write live");
+    let handle = Arc::new(RankedMutex::new(config));
+    apply_rotated_tokens_locked(
+        &handle,
+        &crate::profile::ProfileName::from(name),
+        TokenResponse {
+            access_token: "at-rotated".to_string(),
+            refresh_token: "rt-rotated".to_string(),
+            expires_in: 3600,
+            scope: None,
+        },
+    )
+    .expect("persist");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&live_path).expect("read")).expect("parse");
+    assert_eq!(
+        raw["claudeAiOauth"]["accessToken"], "at-rotated",
+        "the arming rotation follows the old-pair live file"
+    );
+    assert!(
+        raw["claudeAiOauth"].get("refreshToken").is_none(),
+        "the arming rotation installs the refreshless projection"
+    );
+    assert!(raw.get("mcpOAuth").is_some(), "blocks survive the follow");
+}
