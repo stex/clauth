@@ -1426,6 +1426,13 @@ pub(crate) fn read_config_dir_item(config_dir: &Path) -> Result<Option<Value>> {
     read_blob_at(&service, &account()?)
 }
 
+/// Read the item at an explicitly named service: the bare
+/// `Claude Code-credentials` item (the global login) or a derived
+/// per-config-dir one. The `which` resolution tier is the reader.
+pub(crate) fn read_blob_for_service(service: &str) -> Result<Option<Value>> {
+    read_blob_at(service, &account()?)
+}
+
 /// Whether a failed item read failed because the bytes were unparseable — the
 /// truncated-write class (`UnparseableItem`, #66/#76). The carry-back treats
 /// this as "nothing to carry" rather than an error, so the swap's item write
