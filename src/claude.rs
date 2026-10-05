@@ -1415,8 +1415,17 @@ pub(crate) fn carry_session_item_into(store: &Path, config_dir: &Path) -> Result
             // switch-away snapshot): keep it, the carry must not revert it.
             return Ok(());
         }
+        let store_creds = store_bytes
+            .as_deref()
+            .and_then(|sb| serde_json::from_slice::<ClaudeCredentials>(sb).ok());
         crate::profile::atomic_write_600(store, &bytes)
-            .with_context(|| format!("failed to write {}", store.display()))
+            .with_context(|| format!("failed to write {}", store.display()))?;
+        // Mark the `/profile` reading stale only when the carried LOGIN changed,
+        // never for a rewrite that touched only other keys.
+        if crate::profile::login_changed(store_creds.as_ref(), &parsed) {
+            crate::usage::mark_profile_read_stale(store);
+        }
+        Ok(())
     })
 }
 
@@ -3225,7 +3234,8 @@ pub(crate) fn snapshot_active_credentials(config: &mut AppConfig) -> Result<()> 
             }
             return Ok(());
         }
-        snapshot_active_credentials_unchecked(config, &active, held)
+        snapshot_active_credentials_unchecked(config, &active, held, false)?;
+        Ok(())
     })
 }
 
@@ -3248,7 +3258,7 @@ pub(crate) fn adopt_first_login(config: &mut AppConfig, active: &ProfileName) ->
             is_first_login(active)?,
             "refusing to adopt for '{active}': the live login is no longer a first login"
         );
-        snapshot_active_credentials_unchecked(config, active, held)?;
+        snapshot_active_credentials_unchecked(config, active, held, true)?;
         anyhow::ensure!(
             install_source_path(active)?.exists(),
             "refusing to relink '{active}': the live login was not captured into it"
@@ -3261,6 +3271,7 @@ fn snapshot_active_credentials_unchecked(
     config: &mut AppConfig,
     active: &ProfileName,
     held: &StateLockHeld,
+    remove_anchor: bool,
 ) -> Result<()> {
     // CLA-SPLIT: a profile whose live slot holds its static session token carries
     // nothing to snapshot, and capturing the live file into `profile.credentials`
@@ -3303,15 +3314,28 @@ fn snapshot_active_credentials_unchecked(
     if live_login_is_empty(&credentials) {
         return Ok(());
     }
-    if let Some(profile) = config.find_mut(active) {
-        profile.set_credentials(Some(credentials), held);
-        save_profile(profile)?;
-        // The capture above models the login alone, so a key only the live
-        // file holds (a `/design-login`) would be dropped here and gone with
-        // the relink that follows: sync it into the store the login was just
-        // captured into.
-        sync_live_extra_into_install_source(active);
+    let Some(profile) = config.find_mut(active) else {
+        return Ok(());
+    };
+    if remove_anchor {
+        // An install that reads the login off disk proves no uuid: remove the old
+        // anchor BEFORE the store write, so a later failure in this hold (the
+        // relink, the settings write) never leaves the old account's identity
+        // vouching for the freshly captured login. The non-force LinkedTo
+        // snapshot passes `false` — its bytes are the store's own, so the anchor
+        // stays.
+        crate::profile_cache::remove_profile_cache(
+            active,
+            crate::profile_cache::ACCOUNT_ID_CACHE_FILE,
+        );
     }
+    profile.set_credentials(Some(credentials), held);
+    save_profile(profile)?;
+    // The capture above models the login alone, so a key only the live
+    // file holds (a `/design-login`) would be dropped here and gone with
+    // the relink that follows: sync it into the store the login was just
+    // captured into.
+    sync_live_extra_into_install_source(active);
     Ok(())
 }
 
@@ -3340,7 +3364,9 @@ pub(crate) fn force_snapshot_active_credentials(config: &mut AppConfig) -> Resul
         let Some(active) = config.state.active_profile.as_ref().cloned() else {
             return Ok(());
         };
-        snapshot_active_credentials_unchecked(config, &active, held)
+        // The snapshot reads the live login off disk, so its uuid is unproven:
+        // the shared sink removes the anchor before the store write.
+        snapshot_active_credentials_unchecked(config, &active, held, true)
     })
 }
 

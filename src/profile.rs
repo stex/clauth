@@ -3536,6 +3536,53 @@ pub(crate) fn preserve_extra_blocks(
     }
 }
 
+/// The profile's stored claude OAuth access token, read from `credentials.json`
+/// directly — never [`load_profile`] (its pending-recovery write-through would
+/// adopt a staged rotation's pair as if committed). `None` on an absent or
+/// unparseable store or a login-less chain. The `/profile` read calls this once
+/// at request time, outside the state flock; its caller then re-checks the sent
+/// token inside the flock ([`stored_token_matches`]).
+pub(crate) fn stored_access_token(name: &ProfileName) -> Option<String> {
+    let Ok(path) = profile_credentials_path(name) else {
+        return None;
+    };
+    let Ok(creds) = read_json_file::<ClaudeCredentials>(&path) else {
+        return None;
+    };
+    creds.claude_ai_oauth.map(|o| o.access_token)
+}
+
+/// The access token `fetched` answered for is STILL the profile's stored one —
+/// the ONE shared guard the `/profile` read's two ride-alongs run under the state
+/// flock, because that reading is evidence about the exact token that fetched it,
+/// and a re-login or a concurrent rotation changes that token. `false` on an
+/// absent/unparseable store or a moved chain.
+pub(crate) fn stored_token_matches(name: &ProfileName, fetched_access_token: &str) -> bool {
+    stored_access_token(name).as_deref() == Some(fetched_access_token)
+}
+
+/// Whether `incoming`'s claude OAuth login (access OR refresh token) differs from
+/// what `stored` holds. An absent or unparseable `stored` counts as changed; a
+/// rewrite that touches only other keys (an MCP-server token refresh) is
+/// unchanged, so a copy-back that only moved those keys must not mark the
+/// `/profile` reading stale.
+pub(crate) fn login_changed(
+    stored: Option<&ClaudeCredentials>,
+    incoming: &ClaudeCredentials,
+) -> bool {
+    let Some(stored) = stored else {
+        return true;
+    };
+    let Some(stored_oauth) = stored.claude_ai_oauth.as_ref() else {
+        return true;
+    };
+    let Some(incoming_oauth) = incoming.claude_ai_oauth.as_ref() else {
+        return false;
+    };
+    stored_oauth.access_token != incoming_oauth.access_token
+        || stored_oauth.refresh_token != incoming_oauth.refresh_token
+}
+
 /// The #80 backfill: stamp the polled raw rate-limit tier into a stored chain
 /// that predates login-time stamping, so a pre-#80 mint picks the key up
 /// without a manual re-login (decision 1 of the #80 review).
@@ -3555,40 +3602,55 @@ pub(crate) fn preserve_extra_blocks(
 /// uses for its own write-through.
 ///
 /// `Ok(true)` = stamped now; `Ok(false)` = nothing to write (off-roster, a
-/// staged sidecar, no store, no chain, a moved chain, or an already-stamped
-/// tier); `Err` = could not read or persist.
+/// staged sidecar, no store, no chain, or an already-stamped tier); `Err` =
+/// could not read or persist. The caller holds the state flock and has already
+/// run the stored-token check (the `/profile` read's two ride-alongs share ONE
+/// hold and ONE check).
+pub(crate) fn stamp_rate_limit_tier_if_missing_held(
+    name: &ProfileName,
+    tier: &str,
+    _held: &StateLockHeld,
+) -> Result<bool> {
+    // Fresh record membership, like every other persist leg: the poll's
+    // work list can lag a concurrent delete/rename by a tick.
+    if !is_configured(name)? {
+        return Ok(false);
+    }
+    if profile_credentials_pending_path(name)?.exists() {
+        return Ok(false);
+    }
+    let cred_path = profile_credentials_path(name)?;
+    if !cred_path.exists() {
+        return Ok(false);
+    }
+    let mut creds: ClaudeCredentials = read_json_file(&cred_path)?;
+    let Some(oauth) = creds.claude_ai_oauth.as_mut() else {
+        return Ok(false);
+    };
+    if oauth.rate_limit_tier().is_some() {
+        return Ok(false);
+    }
+    oauth.set_rate_limit_tier(tier.to_string());
+    let bytes = serialize_credentials_preserving_extra(&creds, &cred_path)?;
+    atomic_write_600(&cred_path, bytes).context("failed to write credentials.json")?;
+    Ok(true)
+}
+
+/// Standalone wrapper for [`stamp_rate_limit_tier_if_missing_held`]: take the
+/// state flock and the stored-token check itself. The production `/profile` leg
+/// calls the held body inside a combined one-flock ride-along; this is what the
+/// tier-stamp tests drive.
+#[cfg(test)]
 pub(crate) fn stamp_rate_limit_tier_if_missing(
     name: &ProfileName,
     fetched_access_token: &str,
     tier: &str,
 ) -> Result<bool> {
-    with_state_lock(|_held| {
-        // Fresh record membership, like every other persist leg: the poll's
-        // work list can lag a concurrent delete/rename by a tick.
-        if !is_configured(name)? {
+    with_state_lock(|held| {
+        if !stored_token_matches(name, fetched_access_token) {
             return Ok(false);
         }
-        if profile_credentials_pending_path(name)?.exists() {
-            return Ok(false);
-        }
-        let cred_path = profile_credentials_path(name)?;
-        if !cred_path.exists() {
-            return Ok(false);
-        }
-        let mut creds: ClaudeCredentials = read_json_file(&cred_path)?;
-        let Some(oauth) = creds.claude_ai_oauth.as_mut() else {
-            return Ok(false);
-        };
-        if oauth.access_token != fetched_access_token {
-            return Ok(false);
-        }
-        if oauth.rate_limit_tier().is_some() {
-            return Ok(false);
-        }
-        oauth.set_rate_limit_tier(tier.to_string());
-        let bytes = serialize_credentials_preserving_extra(&creds, &cred_path)?;
-        atomic_write_600(&cred_path, bytes).context("failed to write credentials.json")?;
-        Ok(true)
+        stamp_rate_limit_tier_if_missing_held(name, tier, held)
     })
 }
 

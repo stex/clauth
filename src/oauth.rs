@@ -61,22 +61,38 @@ pub(crate) fn clear_endpoint_overrides() {
 
 fn token_endpoint() -> std::borrow::Cow<'static, str> {
     #[cfg(test)]
-    if let Some(url) = TOKEN_ENDPOINT_OVERRIDE.lock().ok().and_then(|g| g.clone()) {
-        return std::borrow::Cow::Owned(url);
+    {
+        if let Some(url) = TOKEN_ENDPOINT_OVERRIDE.lock().ok().and_then(|g| g.clone()) {
+            return std::borrow::Cow::Owned(url);
+        }
+        panic!(
+            "token endpoint requested with no test override; hold a `testutil::EndpointSandbox`"
+        );
     }
-    std::borrow::Cow::Borrowed(TOKEN_ENDPOINT)
+    #[cfg(not(test))]
+    {
+        std::borrow::Cow::Borrowed(TOKEN_ENDPOINT)
+    }
 }
 
 fn messages_endpoint() -> std::borrow::Cow<'static, str> {
     #[cfg(test)]
-    if let Some(url) = MESSAGES_ENDPOINT_OVERRIDE
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
     {
-        return std::borrow::Cow::Owned(url);
+        if let Some(url) = MESSAGES_ENDPOINT_OVERRIDE
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+        {
+            return std::borrow::Cow::Owned(url);
+        }
+        panic!(
+            "messages endpoint requested with no test override; hold a `testutil::EndpointSandbox`"
+        );
     }
-    std::borrow::Cow::Borrowed(MESSAGES_ENDPOINT)
+    #[cfg(not(test))]
+    {
+        std::borrow::Cow::Borrowed(MESSAGES_ENDPOINT)
+    }
 }
 
 /// `User-Agent` + `Accept` Claude Code's axios client sends on every token-endpoint
@@ -131,6 +147,13 @@ pub(crate) const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /// call does. Probing with `count_tokens`, `oauth/usage`, or session
 /// endpoints all confirmed this experimentally. `?beta=true` matches the query
 /// Claude Code puts on every messages request (verified on the wire).
+#[cfg_attr(
+    test,
+    allow(
+        dead_code,
+        reason = "test builds panic in the endpoint resolver instead of reaching the production URL"
+    )
+)]
 const MESSAGES_ENDPOINT: &str = "https://api.anthropic.com/v1/messages?beta=true";
 
 /// The `anthropic-beta` set Claude Code sends on its launch WARMUP post to
@@ -1990,6 +2013,11 @@ pub(crate) fn try_adopt_live_rotation(
         }
         profile.set_credentials(Some(live.clone()), held);
         save_profile(profile)?;
+        // The adopted pair is provably `live_id`'s account (the identity gate
+        // above compared the mirror probe against it), so the anchor rides the
+        // SAME hold that committed the store: a cross-process install's removal
+        // landing in between cannot be overwritten by a stale uuid.
+        write_profile_cache(name, ACCOUNT_ID_CACHE_FILE, &live_id);
         Ok::<bool, anyhow::Error>(true)
     })
     .unwrap_or(false);
@@ -2013,7 +2041,6 @@ pub(crate) fn try_adopt_live_rotation(
         // may be older than a concurrent CLI account mutation.
         let _ = crate::profile::set_auth_broken_persisted(name, false);
     }
-    write_profile_cache(name, ACCOUNT_ID_CACHE_FILE, &live_id);
     logline!(
         "clauth: adopted the live session's rotated login for '{name}' \
          (the running claude refreshed first, so no token spent)"

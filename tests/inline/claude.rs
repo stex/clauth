@@ -910,6 +910,194 @@ fn force_snapshot_skips_shell_but_still_captures_real_divergence() {
     );
 }
 
+/// A force-snapshot (the TUI divergence Overwrite and the CLI switch's
+/// reconcile) captures the live login off disk, so it proves no account uuid:
+/// the profile's anchor must be removed, not left naming the old account for
+/// the freshly captured login. The next `/profile` read re-seeds it from the new
+/// login's own body.
+#[test]
+fn force_snapshot_removes_a_stale_identity_anchor() {
+    let _home = HomeSandbox::new();
+    let mut config = seed_relogin_scenario(
+        "active",
+        creds("stored-access", Some("stored-refresh")),
+        creds("relogin-access", Some("relogin-refresh")),
+    );
+    // The stored chain last proved account u-a; the diverged live login proves nothing.
+    crate::usage::seed_login_anchor(
+        &crate::profile::ProfileName::from("active"),
+        Some(&crate::profile::AccountId::from("uuid-a".to_string())),
+    );
+
+    force_snapshot_active_credentials(&mut config).expect("snapshot");
+
+    assert_eq!(
+        crate::profile_cache::load_profile_cache::<String>(
+            &crate::profile::ProfileName::from("active"),
+            crate::profile_cache::ACCOUNT_ID_CACHE_FILE
+        ),
+        None,
+        "the captured login proves no uuid, so the old anchor must go"
+    );
+}
+
+/// A LinkedTo snapshot (the switch-away, switch-off, TUI start and shutdown
+/// sink) rewrites the SAME credential bytes the store already holds, so it is
+/// not a login install: a present anchor must survive byte-for-byte.
+#[test]
+fn a_linked_to_snapshot_keeps_the_anchor() {
+    let _home = HomeSandbox::new();
+    let mut config = seed_relogin_scenario(
+        "active",
+        creds("stored-access", Some("stored-refresh")),
+        creds("stored-access", Some("stored-refresh")),
+    );
+    crate::usage::seed_login_anchor(
+        &crate::profile::ProfileName::from("active"),
+        Some(&crate::profile::AccountId::from("uuid-a".to_string())),
+    );
+
+    snapshot_active_credentials(&mut config).expect("snapshot");
+
+    assert_eq!(
+        crate::profile_cache::load_profile_cache::<String>(
+            &crate::profile::ProfileName::from("active"),
+            crate::profile_cache::ACCOUNT_ID_CACHE_FILE
+        )
+        .as_deref(),
+        Some("uuid-a"),
+        "a LinkedTo snapshot rewrites the same bytes, so the anchor stays"
+    );
+}
+
+/// A force snapshot that captures NOTHING (a logged-out shell) wrote no login,
+/// so a present anchor must survive — the removal is only reached past the shell
+/// gate.
+#[test]
+fn a_force_snapshot_over_a_shell_keeps_the_anchor() {
+    let _home = HomeSandbox::new();
+    let mut config = seed_relogin_scenario(
+        "active",
+        creds("stored-access", Some("stored-refresh")),
+        creds("", Some("")),
+    );
+    crate::usage::seed_login_anchor(
+        &crate::profile::ProfileName::from("active"),
+        Some(&crate::profile::AccountId::from("uuid-a".to_string())),
+    );
+
+    force_snapshot_active_credentials(&mut config).expect("snapshot");
+
+    assert_eq!(
+        crate::profile_cache::load_profile_cache::<String>(
+            &crate::profile::ProfileName::from("active"),
+            crate::profile_cache::ACCOUNT_ID_CACHE_FILE
+        )
+        .as_deref(),
+        Some("uuid-a"),
+        "a shell captures nothing, so the anchor stays"
+    );
+}
+
+/// A relink failing AFTER the first-login adopt's capture must still leave the
+/// old anchor gone: the removal happens inside the hold, before the store write,
+/// so the failure after the commit never strands the new login under the old
+/// account's anchor.
+#[cfg(unix)]
+#[test]
+fn a_failed_adopt_relink_leaves_no_stale_anchor() {
+    use std::os::unix::fs::PermissionsExt;
+    let _home = HomeSandbox::new();
+    let name = "p3";
+    let pname = crate::profile::ProfileName::from(name);
+    let profile = crate::profile::Profile::new(name.to_string(), None, None);
+    crate::profile::save_profile(&profile).expect("save profile");
+    let mut config = AppConfig {
+        state: crate::profile::AppState::default(),
+        profiles: vec![profile],
+    };
+    config.state.active_profile = Some(name.into());
+    config.state.profiles = vec![name.into()];
+    crate::profile::save_app_state(&config.state).expect("persist state");
+    crate::usage::seed_login_anchor(
+        &pname,
+        Some(&crate::profile::AccountId::from("uuid-a".to_string())),
+    );
+    let live = claude_credentials_path().expect("creds path");
+    std::fs::create_dir_all(live.parent().expect("parent")).expect("mkdir .claude");
+    std::fs::write(
+        &live,
+        serde_json::to_vec(&creds("live-access", Some("live-refresh"))).expect("ser"),
+    )
+    .expect("write live");
+    let dir = live.parent().expect("parent").to_path_buf();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).expect("ro");
+    let adopted = adopt_first_login(&mut config, &pname);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("rw");
+    assert!(
+        adopted.is_err(),
+        "precondition: the relink after the capture fails"
+    );
+    let stored = crate::profile::load_profile(&pname).expect("load");
+    assert_eq!(
+        stored.access_token(),
+        Some("live-access"),
+        "precondition: the store took the adopted login before the relink failed"
+    );
+    assert_eq!(
+        crate::profile_cache::load_profile_cache::<String>(
+            &pname,
+            crate::profile_cache::ACCOUNT_ID_CACHE_FILE
+        ),
+        None,
+        "the store holds the adopted login, so the old anchor must not survive the failed relink"
+    );
+}
+
+/// A first-login adoption snapshots the live login off disk (no proven uuid),
+/// so a stale anchor left by a prior logged-out login must be removed too —
+/// otherwise it would vouch for a login it never proved, and a later adopt of
+/// the NEW account's CC rotation would be refused as foreign.
+#[test]
+fn adopt_first_login_removes_a_stale_identity_anchor() {
+    let _home = HomeSandbox::new();
+    let name = "adopt-first";
+    let profile = crate::profile::Profile::new(name.to_string(), None, None);
+    crate::profile::save_profile(&profile).expect("save profile");
+    let mut config = AppConfig {
+        state: crate::profile::AppState::default(),
+        profiles: vec![profile],
+    };
+    config.state.active_profile = Some(name.into());
+    config.state.profiles = vec![name.into()];
+    crate::profile::save_app_state(&config.state).expect("persist state");
+    // A logged-out profile can still carry its old anchor: `clear_profile_credentials`
+    // does not remove it, so a first-login adopt onto that shell must not let the
+    // stale uuid vouch for the new login.
+    crate::usage::seed_login_anchor(
+        &crate::profile::ProfileName::from(name),
+        Some(&crate::profile::AccountId::from("uuid-a".to_string())),
+    );
+    let live = claude_credentials_path().expect("creds path");
+    std::fs::create_dir_all(live.parent().expect("parent")).expect("mkdir .claude");
+    std::fs::write(
+        &live,
+        serde_json::to_vec(&creds("live-access", Some("live-refresh"))).expect("ser"),
+    )
+    .expect("write live");
+
+    adopt_first_login(&mut config, &crate::profile::ProfileName::from(name)).expect("adopt");
+
+    assert_eq!(
+        crate::profile_cache::load_profile_cache::<String>(
+            &crate::profile::ProfileName::from(name),
+            crate::profile_cache::ACCOUNT_ID_CACHE_FILE
+        ),
+        None,
+        "a first-login adoption proves no uuid, so the stale anchor must go"
+    );
+}
+
 /// `reconcile_startup`'s non-diverged sink, `snapshot_active_credentials`,
 /// used to route a blank (credential-less) active profile's shell-shaped live
 /// file through `is_first_login` -> `adopt_first_login`, which deletes the

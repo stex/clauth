@@ -12742,6 +12742,10 @@ fn run_divergence_choice(app: &mut App, active: &str, choice: DivergenceChoice) 
                 app.toast(ToastKind::Danger, format!("overwrite failed\n{e}"));
                 return;
             }
+            // The overwrite captured a live login that may be a DIFFERENT
+            // account: expire the clock so the next `/profile` read re-seeds the
+            // anchor, the way `overwrite_captured_profile` does.
+            crate::usage::expire_profile_ttl(&ProfileName::from(active));
             if let Err(e) = force_link_profile_credentials(&ProfileName::from(active)) {
                 app.toast(ToastKind::Danger, format!("relink failed\n{e}"));
                 return;
@@ -13230,7 +13234,10 @@ fn apply_login(app: &mut App, session: LoginSession, outcome: crate::oauth_login
         credentials: Some(outcome.credentials),
         base_url: None,
         api_key: None,
-        account_uuid: outcome.account_uuid,
+        anchor: outcome
+            .account_uuid
+            .map(crate::actions::AnchorAction::Proven)
+            .unwrap_or(crate::actions::AnchorAction::Unproven),
     };
     // No stored creds → nothing diverges; adopt silently (mirrors the
     // first-login adopt in `poll_credentials_divergence`).

@@ -1165,6 +1165,99 @@ mod adopt_live_rotation {
         assert_eq!(stored_access(&handle, name), "at-mirror");
     }
 
+    /// End to end: a capture-overwrite commits a live login with NO proven
+    /// uuid, so the anchor is removed; a later same-account CC rotation of the
+    /// live file must STILL be adopted through the stored-token probe (the
+    /// freshly installed stored token is alive, so it proves identity with no
+    /// cached anchor). A refused adoption here would strand the profile behind
+    /// the rotation CC already made.
+    #[test]
+    fn a_capture_overwrite_with_no_uuid_still_adopts_a_same_account_cc_rotation() {
+        let _home = HomeSandbox::new();
+        let name = "adopt-after-unknown-capture";
+        crate::oauth::reset_stored_probe_suppression();
+
+        // An inactive profile storing account u-a's login, anchored u-a.
+        let mut p = crate::profile::Profile::new(name.to_string(), None, None);
+        p.credentials = Some(creds_with("at-new", Some(future_expiry())));
+        crate::profile::save_profile(&p).expect("save");
+        let mut config = crate::profile::AppConfig {
+            state: crate::profile::AppState {
+                profiles: vec![name.into()],
+                active_profile: Some("someone-else".into()),
+                ..crate::profile::AppState::default()
+            },
+            profiles: vec![p],
+        };
+        crate::profile::save_app_state(&config.state).expect("state");
+        crate::usage::seed_login_anchor(
+            &crate::profile::ProfileName::from(name),
+            Some(&crate::profile::AccountId::from("u-a".to_string())),
+        );
+
+        // Capture-overwrite installs the live login with no proven uuid.
+        crate::actions::overwrite_captured_profile(
+            &mut config,
+            &crate::profile::ProfileName::from(name),
+            crate::actions::CaptureSnapshot {
+                credentials: Some(creds_with("at-new", Some(future_expiry()))),
+                base_url: None,
+                api_key: None,
+                anchor: crate::actions::AnchorAction::Unproven,
+            },
+        )
+        .expect("overwrite");
+        assert_eq!(
+            crate::profile_cache::load_profile_cache::<String>(
+                &crate::profile::ProfileName::from(name),
+                crate::profile_cache::ACCOUNT_ID_CACHE_FILE
+            ),
+            None,
+            "an unproven capture removes the anchor"
+        );
+
+        // Make the profile active, and have CC rotate the live file to a fresher
+        // pair of the SAME account (u-b) — the stored token is alive, so its
+        // probe proves identity without the anchor.
+        config.state.active_profile = Some(name.into());
+        crate::profile::save_app_state(&config.state).expect("state");
+        let live = crate::profile::claude_dir()
+            .unwrap()
+            .join(".credentials.json");
+        std::fs::create_dir_all(live.parent().unwrap()).unwrap();
+        std::fs::write(
+            &live,
+            serde_json::to_vec(&creds_with("at-mirror", Some(future_expiry() + 3_600_000)))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let handle = Arc::new(RankedMutex::new(config));
+        // Token-aware: the stored probe answers for "at-new" and the live mirror
+        // probe for "at-mirror", both the SAME account u-b. Any other token is
+        // foreign, so a refused adoption (a skipped stored-token probe, a stale
+        // anchor) reds this test instead of passing on a token-blind closure.
+        let identity = |tok: &str| {
+            if tok == "at-new" || tok == "at-mirror" {
+                Some("u-b".into())
+            } else {
+                Some("foreign".into())
+            }
+        };
+        let adopted = try_adopt_live_rotation(
+            &handle,
+            &crate::profile::ProfileName::from(name),
+            &guard(name),
+            &identity,
+        );
+        assert_eq!(
+            adopted,
+            Some(("at-mirror".into(), Some("at-mirror-refresh".into()))),
+            "the same-account CC rotation is adopted through the stored-token probe, not refused"
+        );
+        assert_eq!(stored_access(&handle, name), "at-mirror");
+    }
+
     /// A stored token that is CLOCK-valid but revoked upstream (its probe
     /// returns `None`) with no cached anchor is the per-leg waste the
     /// suppression exists for. The first leg probes and suppresses; a second

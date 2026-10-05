@@ -2680,7 +2680,7 @@ fn a_capture_overwrite_clears_the_stale_status_chrome() {
                 credentials: None,
                 base_url: None,
                 api_key: None,
-                account_uuid: None,
+                anchor: crate::actions::AnchorAction::Unproven,
             }),
             "zai".to_string(),
             false,
@@ -7050,7 +7050,7 @@ fn login_row_over_a_stashed_live_login_confirms_first() {
         credentials: None,
         base_url: None,
         api_key: None,
-        account_uuid: None,
+        anchor: crate::actions::AnchorAction::Unproven,
     })));
     app.config_draft = Some(draft);
     app.config_focus = ConfigFocus::Actions;
@@ -11038,7 +11038,7 @@ fn capture_name_collision_opens_overwrite_confirm_instead_of_erroring() {
         credentials: None,
         base_url: Some("https://new.example.com".to_string()),
         api_key: Some("new-key".to_string()),
-        account_uuid: None,
+        anchor: crate::actions::AnchorAction::Unproven,
     };
     app.modals
         .push(super::Modal::CaptureName(super::CaptureNameForm {
@@ -11092,7 +11092,7 @@ fn capture_overwrite_cancel_changes_nothing() {
         credentials: None,
         base_url: Some("https://new.example.com".to_string()),
         api_key: Some("new-key".to_string()),
-        account_uuid: None,
+        anchor: crate::actions::AnchorAction::Unproven,
     };
     app.modals.push(super::Modal::Confirm(super::ConfirmState {
         message: "account 'acme' already exists.".to_string(),
