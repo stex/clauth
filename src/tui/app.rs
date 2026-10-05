@@ -441,18 +441,18 @@ pub(crate) enum ConfigRow {
     ApiKey,
     /// Default model (CC `model` setting). Hybrid: space cycles aliases, ⏎ types a custom value.
     Model,
+    /// `ANTHROPIC_DEFAULT_FABLE_MODEL` — full id, free text.
+    FableModel,
     /// `ANTHROPIC_DEFAULT_OPUS_MODEL` — full id, free text.
     OpusModel,
     /// `ANTHROPIC_DEFAULT_SONNET_MODEL` — full id, free text.
     SonnetModel,
     /// `ANTHROPIC_DEFAULT_HAIKU_MODEL` — full id, free text.
     HaikuModel,
-    /// `ANTHROPIC_DEFAULT_FABLE_MODEL` — full id, free text.
-    FableModel,
     /// `CLAUDE_CODE_SUBAGENT_MODEL` — full id, free text.
     SubagentModel,
     /// The `+ model override` reveal row. Shown only while the unset alias
-    /// overrides are collapsed; ⏎ expands opus/sonnet/haiku/fable/subagent inline.
+    /// overrides are collapsed; ⏎ expands fable/opus/sonnet/haiku/subagent inline.
     ModelOverrideAdd,
     /// A custom `key = value` env entry, indexed into the profile's sorted env
     /// snapshot. ⏎ edits its VALUE. An emptied value REMOVES the key — the
@@ -515,6 +515,15 @@ impl ConfigRow {
 /// The `model` row alias cycle (space advances it). `None` renders as `default`
 /// (no `model` key); a custom id set via ⏎ is outside this list.
 pub(crate) const MODEL_PRESETS: [&str; 4] = ["opus", "sonnet", "haiku", "opusplan"];
+
+/// The alias-override rows, in the order Setup lists them.
+const OVERRIDE_ROWS: [ConfigRow; 5] = [
+    ConfigRow::FableModel,
+    ConfigRow::OpusModel,
+    ConfigRow::SonnetModel,
+    ConfigRow::HaikuModel,
+    ConfigRow::SubagentModel,
+];
 
 /// The weekly-line preset ladder: one source for the Config row's segmented
 /// control AND `step_weekly_threshold`'s cycle. 100 reproduces the old
@@ -716,6 +725,10 @@ pub(crate) struct ConfigDraft {
     /// `+ model override` reveal state. Draft-scoped: a fresh draft starts
     /// collapsed (set overrides still render; unset ones hide behind the chip).
     pub(crate) overrides_expanded: bool,
+    /// The override rows this draft opened with a value. They stay listed for
+    /// the draft's life, so emptying one never pulls the row out from under
+    /// the cursor; a fresh draft tucks an unset one behind the chip again.
+    pub(crate) overrides_shown: Vec<ConfigRow>,
     /// A `+ new`-form login stash, held in memory until `create account`
     /// consumes it (capture-then-commit): the browser mint `+ login` produced,
     /// or the live login `+ capture current login` snapshotted. Carries the
@@ -10060,11 +10073,11 @@ pub(crate) fn config_rows(app: &App) -> Vec<ConfigRow> {
     }
     rows.push(ConfigRow::Model);
 
-    // Alias overrides collapse: render the ones already set, tuck the rest behind
-    // a single `+ model override` reveal until ⏎ expands them (draft-scoped).
+    // Alias overrides collapse: render the ones set when the draft opened, tuck
+    // the rest behind a single `+ model override` reveal until ⏎ expands them.
     let expanded = draft.is_some_and(|d| d.overrides_expanded);
     let override_set = |row: ConfigRow| match draft {
-        Some(d) => d.field(row).is_some_and(|i| !i.value.trim().is_empty()),
+        Some(d) => d.overrides_shown.contains(&row),
         None => {
             let v = match row {
                 ConfigRow::OpusModel => profile.and_then(|p| p.models.opus.as_deref()),
@@ -10078,13 +10091,7 @@ pub(crate) fn config_rows(app: &App) -> Vec<ConfigRow> {
         }
     };
     let mut any_collapsed = false;
-    for row in [
-        ConfigRow::OpusModel,
-        ConfigRow::SonnetModel,
-        ConfigRow::HaikuModel,
-        ConfigRow::FableModel,
-        ConfigRow::SubagentModel,
-    ] {
+    for row in OVERRIDE_ROWS {
         if expanded || override_set(row) {
             rows.push(row);
         } else {
@@ -10181,6 +10188,7 @@ pub(crate) fn build_draft_new() -> ConfigDraft {
         armed_action: None,
         relogin_chain: false,
         overrides_expanded: false,
+        overrides_shown: Vec::new(),
         captured_login: None,
     }
 }
@@ -10189,7 +10197,7 @@ fn build_draft_existing(app: &App, name: &ProfileName) -> ConfigDraft {
     let cfg = app.config();
     let profile = cfg.find(name);
     let m = profile.map(|p| p.models.clone()).unwrap_or_default();
-    ConfigDraft {
+    let mut draft = ConfigDraft {
         editing_name: Some(name.to_string()),
         name: InputState::new(name),
         base_url: InputState::new(profile.and_then(|p| p.base_url.as_deref()).unwrap_or("")),
@@ -10207,8 +10215,14 @@ fn build_draft_existing(app: &App, name: &ProfileName) -> ConfigDraft {
         armed_action: None,
         relogin_chain: false,
         overrides_expanded: false,
+        overrides_shown: Vec::new(),
         captured_login: None,
-    }
+    };
+    draft.overrides_shown = OVERRIDE_ROWS
+        .into_iter()
+        .filter(|&row| draft.field(row).is_some_and(|i| !i.value.trim().is_empty()))
+        .collect();
+    draft
 }
 
 /// Back out of the Setup detail pane, dropping the draft. A `+ new` draft
@@ -10665,6 +10679,9 @@ fn start_api_relogin(app: &mut App) {
         d.relogin_chain = true;
         d.active = Some(ConfigRow::BaseUrl);
     }
+    if let Some(pos) = config_row_index(app, ConfigRow::BaseUrl) {
+        app.config_action_cursor = pos;
+    }
 }
 
 /// Kick an OAuth login: mint it on this thread (no network), open the browser
@@ -10933,6 +10950,16 @@ fn handle_config_edit_key(app: &mut App, key: KeyEvent) {
                 apply_input_edit(input, key);
             }
         }
+    }
+    // A keystroke, commit or revert can add or drop rows above the field (a
+    // typed base url flips the account's rows), and the cursor is an index.
+    let edited = app
+        .config_draft
+        .as_ref()
+        .and_then(|d| d.active)
+        .unwrap_or(active);
+    if let Some(pos) = config_row_index(app, edited) {
+        app.config_action_cursor = pos;
     }
 }
 
@@ -11442,17 +11469,15 @@ fn env_add_commit(app: &mut App, name: &ProfileName, key: &str) {
     let Some(idx) = idx else {
         return;
     };
-    if let Some(row_pos) = env_entry_row_index(app, idx) {
+    if let Some(row_pos) = config_row_index(app, ConfigRow::EnvEntry(idx)) {
         app.config_action_cursor = row_pos;
     }
     enter_env_value_edit(app, idx);
 }
 
-/// Position of `EnvEntry(sorted_idx)` in the current detail-row list, if present.
-fn env_entry_row_index(app: &App, sorted_idx: usize) -> Option<usize> {
-    config_rows(app)
-        .iter()
-        .position(|r| *r == ConfigRow::EnvEntry(sorted_idx))
+/// Position of `row` in the current detail-row list, if present.
+fn config_row_index(app: &App, row: ConfigRow) -> Option<usize> {
+    config_rows(app).iter().position(|r| *r == row)
 }
 
 /// Build the collision prompt for a candidate key against its colliding source.
@@ -11528,7 +11553,7 @@ fn run_env_collision_choice(
         EnvCollisionChoice::KeepExisting => {
             // For an own-field clash, jump to the existing entry; else just dismiss.
             if let Some(idx) = existing_idx
-                && let Some(row_pos) = env_entry_row_index(app, idx)
+                && let Some(row_pos) = config_row_index(app, ConfigRow::EnvEntry(idx))
             {
                 app.config_action_cursor = row_pos;
             }
@@ -12041,10 +12066,10 @@ fn preset_clobbers(profile: &Profile) -> Vec<&'static str> {
     let m = &profile.models;
     for (label, set) in [
         ("model", m.default.is_some()),
+        ("fable", m.fable.is_some()),
         ("opus", m.opus.is_some()),
         ("sonnet", m.sonnet.is_some()),
         ("haiku", m.haiku.is_some()),
-        ("fable", m.fable.is_some()),
         ("subagent", m.subagent.is_some()),
     ] {
         if set {
@@ -12095,7 +12120,11 @@ fn apply_preset_to(app: &mut App, target: &str, preset: &str) {
             clear_profile_status_chrome(app, &target);
             app.last_reload_fp = reload_fingerprint();
             if app.config_draft.is_some() {
+                let selected = config_rows(app).get(app.config_action_cursor).copied();
                 app.config_draft = Some(build_draft_existing(app, &target));
+                if let Some(pos) = selected.and_then(|row| config_row_index(app, row)) {
+                    app.config_action_cursor = pos;
+                }
             }
             app.toast(
                 ToastKind::Success,

@@ -1921,6 +1921,73 @@ fn api_relogin_chain_walks_base_url_then_api_key() {
     assert_eq!(d.active, None, "⎋ ends editing");
 }
 
+/// The re-login chain opens fields away from the row it starts on: the cursor
+/// moves with each field it opens, so the highlight and the caret stay on one
+/// row from the first ⏎ to the last.
+#[test]
+fn api_relogin_chain_keeps_the_cursor_on_the_field_being_typed() {
+    use super::{ConfigRow, config_rows, enter_config_detail, handle_key};
+    use crate::profile::{AppConfig, AppState, Profile};
+    use ratatui::crossterm::event::KeyCode;
+    let _home = crate::testutil::HomeSandbox::new();
+
+    let api = Profile::new(
+        "api".to_string(),
+        Some("https://old.example.com".to_string()),
+        Some("old-key".to_string()),
+    );
+    let mut app = App::new(AppConfig {
+        state: AppState {
+            profiles: vec!["api".into()],
+            ..AppState::default()
+        },
+        profiles: vec![api],
+    });
+    app.tab = super::Tab::Setup;
+    app.profile_cursor = 0;
+    enter_config_detail(&mut app);
+    app.config_action_cursor = config_rows(&app)
+        .iter()
+        .position(|r| *r == ConfigRow::Login)
+        .expect("api account shows a login row");
+    let on_cursor = |app: &App| config_rows(app).get(app.config_action_cursor).copied();
+
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+    assert_eq!(
+        on_cursor(&app),
+        Some(ConfigRow::BaseUrl),
+        "re-login opens base url"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Char('x')));
+    assert_eq!(
+        on_cursor(&app),
+        Some(ConfigRow::BaseUrl),
+        "typing stays on base url"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+    assert_eq!(
+        app.config_draft.as_ref().and_then(|d| d.active),
+        Some(ConfigRow::ApiKey),
+        "precondition: ⏎ advanced the chain"
+    );
+    assert_eq!(
+        on_cursor(&app),
+        Some(ConfigRow::ApiKey),
+        "⏎ moves to api key"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+    assert_eq!(
+        app.config_draft.as_ref().and_then(|d| d.active),
+        None,
+        "precondition: the chain ended"
+    );
+    assert_eq!(
+        on_cursor(&app),
+        Some(ConfigRow::ApiKey),
+        "the last field keeps it"
+    );
+}
+
 /// F1: a Setup re-key persists the new credential but the live key-rejected set
 /// must drop the name SAME-FRAME — not on the next tick's reload. The success
 /// arm calls `refresh_tokens`, so `key_rejected_names` re-evaluates the current
@@ -9116,7 +9183,7 @@ fn context_nudge_esc_discards_editor() {
 // ── Setup tab: per-account custom env editor ───────────────────────────────
 
 mod env_editor {
-    use super::super::{App, ConfigFocus, ConfigRow, InputState, Modal, Tab, config_rows};
+    use super::super::{App, ConfigFocus, ConfigRow, InputState, KeyCode, Modal, Tab, config_rows};
     use crate::profile::{AppConfig, AppState, Profile};
     use crate::testutil::HomeSandbox;
     use std::collections::BTreeMap;
@@ -9307,6 +9374,136 @@ mod env_editor {
         assert!(
             !rows.contains(&ConfigRow::ModelOverrideAdd),
             "the chip is gone once expanded"
+        );
+    }
+
+    #[test]
+    fn expanded_overrides_list_fable_first_then_opus_sonnet_haiku_subagent() {
+        let _home = crate::testutil::HomeSandbox::new();
+        let mut app = app_with_env(BTreeMap::new());
+        enter_detail(&mut app);
+        super::super::run_config_row(&mut app, ConfigRow::ModelOverrideAdd);
+        let overrides: Vec<ConfigRow> = config_rows(&app)
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r,
+                    ConfigRow::OpusModel
+                        | ConfigRow::SonnetModel
+                        | ConfigRow::HaikuModel
+                        | ConfigRow::FableModel
+                        | ConfigRow::SubagentModel
+                )
+            })
+            .collect();
+        assert_eq!(
+            overrides,
+            vec![
+                ConfigRow::FableModel,
+                ConfigRow::OpusModel,
+                ConfigRow::SonnetModel,
+                ConfigRow::HaikuModel,
+                ConfigRow::SubagentModel,
+            ]
+        );
+    }
+
+    fn app_with_opus_override_editing() -> App {
+        let mut profile = Profile::new("acct".to_string(), None, None);
+        profile.models.opus = Some("claude-opus-4-8".to_string());
+        let mut app = app_with_profile(profile);
+        enter_detail(&mut app);
+        app.config_action_cursor = config_rows(&app)
+            .iter()
+            .position(|r| *r == ConfigRow::OpusModel)
+            .expect("a set override renders");
+        super::super::handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        assert_eq!(
+            app.config_draft.as_ref().and_then(|d| d.active),
+            Some(ConfigRow::OpusModel),
+            "⏎ opens the opus field"
+        );
+        for _ in 0.."claude-opus-4-8".len() {
+            super::super::handle_key(&mut app, crate::testutil::key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            app.config_draft
+                .as_ref()
+                .map(|d| d.opus_model.value.as_str()),
+            Some(""),
+            "every character is gone"
+        );
+        app
+    }
+
+    /// Typing into an OAuth account's empty base url turns it into an api
+    /// account mid-edit: `auto-start` above the field drops out and `api key`
+    /// joins below it. The cursor stays on the field being typed into, and on
+    /// it again once ⎋ reverts the buffer and the rows flip back.
+    #[test]
+    fn the_cursor_follows_the_base_url_field_while_its_rows_reshape() {
+        let _home = crate::testutil::HomeSandbox::new();
+        let mut app = app_with_env(BTreeMap::new());
+        enter_detail(&mut app);
+        let before = config_rows(&app);
+        app.config_action_cursor = before
+            .iter()
+            .position(|r| *r == ConfigRow::BaseUrl)
+            .expect("base url row");
+        super::super::handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        super::super::handle_key(&mut app, crate::testutil::key(KeyCode::Char('h')));
+        let typed = config_rows(&app);
+        assert!(
+            !typed.contains(&ConfigRow::AutoStart) && typed.contains(&ConfigRow::ApiKey),
+            "precondition: the typed base url flipped the account to api rows"
+        );
+        assert_eq!(
+            typed.get(app.config_action_cursor),
+            Some(&ConfigRow::BaseUrl)
+        );
+        super::super::handle_key(&mut app, crate::testutil::key(KeyCode::Esc));
+        assert_eq!(config_rows(&app), before, "⎋ restores the oauth rows");
+        assert_eq!(
+            before.get(app.config_action_cursor),
+            Some(&ConfigRow::BaseUrl)
+        );
+    }
+
+    #[test]
+    fn an_override_emptied_mid_edit_keeps_its_row_and_the_cursor() {
+        let _home = crate::testutil::HomeSandbox::new();
+        let app = app_with_opus_override_editing();
+        let rows = config_rows(&app);
+        assert_eq!(
+            rows.get(app.config_action_cursor),
+            Some(&ConfigRow::OpusModel),
+            "the emptied field stays under the cursor"
+        );
+    }
+
+    #[test]
+    fn an_override_committed_empty_stays_until_the_detail_pane_closes() {
+        let _home = crate::testutil::HomeSandbox::new();
+        let mut app = app_with_opus_override_editing();
+        super::super::handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        assert_eq!(
+            app.config()
+                .find(&crate::profile::ProfileName::from("acct"))
+                .and_then(|p| p.models.opus.clone()),
+            None,
+            "an emptied override unsets the alias"
+        );
+        assert_eq!(
+            config_rows(&app).get(app.config_action_cursor),
+            Some(&ConfigRow::OpusModel),
+            "the emptied field stays where it was"
+        );
+        super::super::leave_config_detail(&mut app);
+        enter_detail(&mut app);
+        let rows = config_rows(&app);
+        assert!(
+            !rows.contains(&ConfigRow::OpusModel) && rows.contains(&ConfigRow::ModelOverrideAdd),
+            "a fresh draft tucks the now-unset override behind the chip"
         );
     }
 
@@ -13160,6 +13357,7 @@ fn applying_over_set_fields_names_them_before_replacing_anything() {
     );
     target.models.default = Some("keep-me".to_string());
     target.models.opus = Some("old-opus".to_string());
+    target.models.fable = Some("old-fable".to_string());
     crate::profile::save_profile(&target).expect("save target");
 
     let mut app = app_with(vec![target]);
@@ -13175,8 +13373,8 @@ fn applying_over_set_fields_names_them_before_replacing_anything() {
     assert_eq!(state.message, "apply 'DeepSeek' over 'target'?");
     assert_eq!(
         state.detail.as_deref(),
-        Some("replaces base url, model, opus."),
-        "the warning names the fields, not just that there are some",
+        Some("replaces base url, model, fable, opus."),
+        "the warning names the fields in the Setup rows' order",
     );
     assert!(!state.choice, "the warning defaults to cancel");
 
@@ -13205,6 +13403,49 @@ fn applying_over_set_fields_names_them_before_replacing_anything() {
         applied.models.opus, None,
         "the apply replaces the model block whole, it does not merge into it",
     );
+}
+
+/// A preset applied while the account's detail pane is open reshapes the row
+/// list above the cursor (the endpoint and override rows); the cursor stays on
+/// the row it was on.
+#[test]
+fn a_preset_applied_from_the_open_detail_pane_keeps_the_cursor_on_its_row() {
+    use super::{
+        ActionMenuAction, ConfigRow, Modal, Tab, config_rows, dispatch_action_menu_action,
+        handle_key, run_confirm_action,
+    };
+    use crate::profile::Profile;
+    use ratatui::crossterm::event::KeyCode;
+    let _home = crate::testutil::HomeSandbox::new();
+
+    let mut target = Profile::new("target".to_string(), None, None);
+    target.models.opus = Some("old-opus".to_string());
+    crate::profile::save_profile(&target).expect("save target");
+
+    let mut app = app_with(vec![target]);
+    app.tab = Tab::Setup;
+    app.profile_cursor = 0;
+    super::enter_config_detail(&mut app);
+    let before = config_rows(&app);
+    app.config_action_cursor = before
+        .iter()
+        .position(|r| *r == ConfigRow::Login)
+        .expect("login row");
+
+    dispatch_action_menu_action(&mut app, ActionMenuAction::ApplyPreset);
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter)); // cursor 0 = DeepSeek
+    let Some(Modal::Confirm(state)) = app.modals.pop() else {
+        panic!("the set opus override raises the overwrite warning");
+    };
+    run_confirm_action(&mut app, state.on_confirm);
+
+    let after = config_rows(&app);
+    assert_ne!(
+        after.iter().position(|r| *r == ConfigRow::Login),
+        before.iter().position(|r| *r == ConfigRow::Login),
+        "precondition: the apply moved the login row",
+    );
+    assert_eq!(after.get(app.config_action_cursor), Some(&ConfigRow::Login));
 }
 
 /// `save as preset` onto a name a custom preset already holds asks first, and
