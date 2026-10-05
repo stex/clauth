@@ -957,8 +957,9 @@ pub(crate) struct ChainSnapshot {
     /// Snapshot of `AppState::walk_order()` (issue #86) — which member each
     /// accept pass lands on. `Chain` is the default and today's walk byte for
     /// byte; `SoonestWeeklyReset` orders each pass by the soonest-resetting
-    /// weekly window. Orthogonal to `burn_aware`: burn-aware decides WHEN to
-    /// leave the active, walk order WHERE to land.
+    /// weekly window, `MostWeeklyHeadroom` by the least-used week. Orthogonal
+    /// to `burn_aware`: burn-aware decides WHEN to leave the active, walk
+    /// order WHERE to land.
     pub(crate) walk_order: WalkOrder,
     /// Snapshot of `AppState::refresh_interval_ms` — the projection's poll
     /// interval. Read through `config.state` here (this snapshot is already
@@ -1360,33 +1361,70 @@ fn weekly_reset_key(info: &UsageInfo) -> Option<i64> {
     best
 }
 
+/// The most-weekly-headroom ranking key for one member's cached usage: its
+/// live 7d utilization, then its live 5h utilization. A window past its reset
+/// or carrying no parseable reset, and an absent 5h window, read as unused:
+/// the same wall-clock rule the exhaustion predicates apply. `None` when the
+/// reading holds no weekly window at all: an unknown week cannot be proven
+/// emptier than a read one.
+fn weekly_headroom_key(info: &UsageInfo, now_secs: i64) -> Option<(f64, f64)> {
+    let seven = info.seven_day.as_ref()?;
+    let seven_used = if seven_day_live(info, now_secs) {
+        seven.utilization
+    } else {
+        0.0
+    };
+    let five_used = match &info.five_hour {
+        Some(window) if five_hour_live(info, now_secs) => window.utilization,
+        _ => 0.0,
+    };
+    Some((seven_used, five_used))
+}
+
 /// One accept pass's candidate visit order under `mode`, the shared ordering
 /// helper every fallback walk pass threads through (issue #86). It replaces
 /// the old `walk_chain` primitive: the visit sequence is the same, the
-/// skip/accept folding moved to each call site's `find`.
+/// skip/accept folding moved to each call site's `find`. `reading` is a
+/// slot's cached usage, `None` when nothing has been read for it.
 ///
 /// `WalkOrder::Chain` returns the old walk's exact visit sequence — every
 /// slot starting one after `idx` and wrapping — so the default is byte for
 /// byte today's walk. `WalkOrder::SoonestWeeklyReset` stable-sorts that
-/// sequence by `reset_key` (soonest first; `None` — no parseable weekly
-/// reset — after every `Some`, since an unknown reset cannot be proven
-/// soon). The stable sort keeps the chain-position walk order as the tie
-/// rule: ties on the parsed instant fall back to chain position, the exact
-/// tie rule `soonest_resume` documents and pins. Skip predicates stay at
-/// the call sites, unchanged — the mode reorders only WITHIN one accept
-/// pass, never across the pass ladder.
-fn ordered_walk(
+/// sequence by [`weekly_reset_key`] (soonest first; `None` — no parseable
+/// weekly reset — after every `Some`, since an unknown reset cannot be
+/// proven soon). `WalkOrder::MostWeeklyHeadroom` stable-sorts it by
+/// [`weekly_headroom_key`] (least-used week first, 5h breaking a weekly tie;
+/// no weekly window to read, or no reading at all, after every member that
+/// has one). The stable sort keeps the chain-position walk order as the tie
+/// rule: ties fall back to chain position, the exact tie rule
+/// `soonest_resume` documents and pins. Skip predicates stay at the call
+/// sites, unchanged — the mode reorders only WITHIN one accept pass, never
+/// across the pass ladder.
+fn ordered_walk<'u>(
     mode: WalkOrder,
     idx: usize,
     len: usize,
-    reset_key: &dyn Fn(usize) -> Option<i64>,
+    reading: &dyn Fn(usize) -> Option<&'u UsageInfo>,
 ) -> Vec<usize> {
     let mut order: Vec<usize> = (1..=len).map(|offset| (idx + offset) % len).collect();
-    if mode == WalkOrder::SoonestWeeklyReset {
-        order.sort_by_key(|&i| {
-            let k = reset_key(i);
+    match mode {
+        WalkOrder::Chain => {}
+        WalkOrder::SoonestWeeklyReset => order.sort_by_key(|&i| {
+            let k = reading(i).and_then(weekly_reset_key);
             (k.is_none(), k)
-        });
+        }),
+        WalkOrder::MostWeeklyHeadroom => {
+            let now = now_epoch_secs();
+            let keys: Vec<Option<(f64, f64)>> = (0..len)
+                .map(|i| reading(i).and_then(|info| weekly_headroom_key(info, now)))
+                .collect();
+            order.sort_by(|&a, &b| match (keys[a], keys[b]) {
+                (Some((a7, a5)), Some((b7, b5))) => a7.total_cmp(&b7).then(a5.total_cmp(&b5)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            });
+        }
     }
     order
 }
@@ -1513,7 +1551,8 @@ pub(crate) struct StartCandidate {
 /// freshness accepted in pass two — the same preference the switch walk gives
 /// its target in [`next_auto_switch_target`]). Each pass follows the
 /// `walk_order` mode: chain position by default, the soonest-resetting weekly
-/// window under `soonest-weekly-reset`.
+/// window under `soonest-weekly-reset`, the least-used week under
+/// `most-weekly-headroom`.
 pub(crate) fn start_walk(
     config: &AppConfig,
     families: Option<&[String]>,
@@ -1529,12 +1568,13 @@ pub(crate) fn start_walk(
     // not once per candidate.
     let key_rejected = durable_key_rejected(config);
     let mut rows: Vec<StartCandidate> = Vec::with_capacity(names.len());
-    // The walk-order ranking key per row, built in the same loop as the rows
-    // (parallel vec, same indices) so the walk below can order by weekly
-    // reset without widening `StartCandidate`'s public shape. The key is
-    // consulted only by the soonest-reset sort, so under `chain` (the
-    // default) the push stays inert and the walk is byte-identical.
-    let mut reset_keys: Vec<Option<i64>> = Vec::with_capacity(names.len());
+    // The reading each row's walk-order ranking reads, built in the same loop
+    // as the rows (parallel vec, same indices) so the walk below can order
+    // them without widening `StartCandidate`'s public shape. Owned, because a
+    // third-party row's reading lives only inside its loop iteration. Only
+    // the ranking modes consult it, so under `chain` (the default) nothing is
+    // copied and the walk is byte-identical.
+    let mut readings: Vec<Option<UsageInfo>> = Vec::with_capacity(names.len());
     for name in names {
         let Some(profile) = config.find(name) else {
             continue;
@@ -1569,10 +1609,10 @@ pub(crate) fn start_walk(
             needs_oauth,
             families,
         );
-        reset_keys.push(if walk_order == WalkOrder::Chain {
+        readings.push(if walk_order == WalkOrder::Chain {
             None
         } else {
-            usage.and_then(weekly_reset_key)
+            usage.cloned()
         });
         rows.push(StartCandidate {
             name: name.clone(),
@@ -1586,7 +1626,7 @@ pub(crate) fn start_walk(
         return (rows, None);
     }
     let len = rows.len();
-    let order = ordered_walk(walk_order, len - 1, len, &|i| reset_keys[i]);
+    let order = ordered_walk(walk_order, len - 1, len, &|i| readings[i].as_ref());
     let pick = order
         .iter()
         .copied()
@@ -1727,8 +1767,9 @@ fn candidate_excluded(
 /// Picks the next chain member to switch to, starting one slot after the active
 /// profile and wrapping. Returns None when nothing is viable. Each pass visits
 /// its candidates in walk-order mode (`AppState.walk_order`): chain position by
-/// default, the soonest-resetting weekly window under `soonest-weekly-reset` —
-/// the ordering applies WITHIN each pass only, never across the ladder below.
+/// default, the soonest-resetting weekly window under `soonest-weekly-reset`,
+/// the least-used week under `most-weekly-headroom` — the ordering applies
+/// WITHIN each pass only, never across the ladder below.
 ///
 ///   1. Any member with real headroom (5h utilization below threshold, or no
 ///      usage data fetched yet) that its own gates leave in rotation: the
@@ -1761,13 +1802,8 @@ pub(crate) fn next_target(
 
     let skip =
         |i: usize| chain[i] == *active || candidate_excluded(config, &chain[i], key_rejected);
-    let reset_key = |i: usize| {
-        config
-            .find(&chain[i])
-            .and_then(|p| p.usage.as_ref())
-            .and_then(weekly_reset_key)
-    };
-    let order = ordered_walk(config.state.walk_order(), active_idx, len, &reset_key);
+    let reading = |i: usize| config.find(&chain[i]).and_then(|p| p.usage.as_ref());
+    let order = ordered_walk(config.state.walk_order(), active_idx, len, &reading);
     let walk = |accept: &dyn Fn(&Profile) -> bool| -> Option<String> {
         order
             .iter()
@@ -2075,12 +2111,8 @@ fn next_auto_switch_target_core(
                 .any(|k| k == &snapshot.chain[i].name)
             || is_canceled_from_usage(&snapshot.chain[i].name, usage)
     };
-    let reset_key = |i: usize| {
-        usage
-            .get(snapshot.chain[i].name.as_str())
-            .and_then(weekly_reset_key)
-    };
-    let order = ordered_walk(snapshot.walk_order, active_idx, len, &reset_key);
+    let reading = |i: usize| usage.get(snapshot.chain[i].name.as_str());
+    let order = ordered_walk(snapshot.walk_order, active_idx, len, &reading);
     let walk = |accept: &dyn Fn(&ChainMember) -> bool| -> Option<String> {
         order
             .iter()
@@ -2174,9 +2206,12 @@ fn next_auto_switch_target_core(
         // recomputed home outranks it. The ordering rides the shared
         // `order` (the soonest-reset sequence with the chain-position tie
         // rule). `chain` (the default) has no home pass — a healthy active
-        // stays put, byte-identical to today, and a chain that DOES carry
-        // `preferred` keeps preferred's behavior exactly whatever the mode
-        // (the guard above).
+        // stays put, byte-identical to today — and neither has
+        // `most-weekly-headroom`: utilization moves with every poll, so a
+        // home re-ranked by it would hop between near-equal members as they
+        // burn (the #86 objection to a headroom order); it ranks hop targets
+        // only. A chain that DOES carry `preferred` keeps
+        // preferred's behavior exactly whatever the mode (the guard above).
         // Already-home guard (the `pref != active.name` analog): the walk
         // fires only toward a clear+fresh member whose weekly reset is
         // STRICTLY sooner than the active's own — the active qualifies as a
@@ -2203,7 +2238,8 @@ fn next_auto_switch_target_core(
                 !skip(i)
                     && clear(&snapshot.chain[i])
                     && snapshot.fresh.iter().any(|n| n == &snapshot.chain[i].name)
-                    && reset_key(i)
+                    && reading(i)
+                        .and_then(weekly_reset_key)
                         .is_some_and(|candidate_key| active_key.is_none_or(|a| candidate_key < a))
             })
         {
@@ -2326,25 +2362,15 @@ fn fully_clear_target(
     let chain = &config.state.fallback_chain;
     let active_idx = chain.iter().position(|n| n == active)?;
     let skip = |i: usize| chain[i] == active || candidate_excluded(config, &chain[i], key_rejected);
-    let reset_key = |i: usize| {
-        config
-            .find(&chain[i])
-            .and_then(|p| p.usage.as_ref())
-            .and_then(weekly_reset_key)
-    };
-    let pick = ordered_walk(
-        config.state.walk_order(),
-        active_idx,
-        chain.len(),
-        &reset_key,
-    )
-    .into_iter()
-    .find(|&i| {
-        !skip(i)
-            && config.find(&chain[i]).is_some_and(|p| {
-                !is_exhausted(p, weekly_pct) && !scoped_weekly_blocked(p, weekly_pct)
-            })
-    });
+    let reading = |i: usize| config.find(&chain[i]).and_then(|p| p.usage.as_ref());
+    let pick = ordered_walk(config.state.walk_order(), active_idx, chain.len(), &reading)
+        .into_iter()
+        .find(|&i| {
+            !skip(i)
+                && config.find(&chain[i]).is_some_and(|p| {
+                    !is_exhausted(p, weekly_pct) && !scoped_weekly_blocked(p, weekly_pct)
+                })
+        });
     pick.map(|i| chain[i].to_string())
 }
 
@@ -2425,7 +2451,7 @@ pub(crate) fn find_recovered_member(
         walk_order,
         chain.len().saturating_sub(1),
         chain.len(),
-        &|i| usage.get(chain[i].name.as_str()).and_then(weekly_reset_key),
+        &|i| usage.get(chain[i].name.as_str()),
     );
     for i in order.iter().copied() {
         if recovered(&chain[i], true) == Some(true) {

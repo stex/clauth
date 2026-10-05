@@ -827,11 +827,13 @@ impl Default for UpdateSettings {
 /// byte for byte: first accept in chain position, starting one slot after the
 /// active and wrapping. `SoonestWeeklyReset` reorders each accept pass by the
 /// soonest-resetting weekly window, so the member whose quota expires soonest
-/// drains first and less expires unspent; the pass ladder (free quota >
-/// serving sink > spend-armed > dead sink > halt) and every exclusion are
-/// untouched — the mode decides only WHERE among the members a pass already
-/// accepts to land. Serialized as a lowercase string with an explicit
-/// hyphenated second value: `walk_order = "soonest-weekly-reset"`.
+/// drains first and less expires unspent; `MostWeeklyHeadroom` reorders it by
+/// the least-used week, so hops spread across the chain instead of always
+/// landing on the next slot. The pass ladder (free quota > serving sink >
+/// spend-armed > dead sink > halt) and every exclusion are untouched — the
+/// mode decides only WHERE among the members a pass already accepts to land.
+/// Serialized as a lowercase string with explicit hyphenated spellings:
+/// `walk_order = "soonest-weekly-reset"`, `walk_order = "most-weekly-headroom"`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum WalkOrder {
@@ -841,6 +843,10 @@ pub(crate) enum WalkOrder {
     /// Order each accept pass by the soonest-resetting weekly window.
     #[serde(rename = "soonest-weekly-reset")]
     SoonestWeeklyReset,
+    /// Order each accept pass by the least-used weekly window. Hop targets
+    /// only: unlike `SoonestWeeklyReset` it never walks a healthy active.
+    #[serde(rename = "most-weekly-headroom")]
+    MostWeeklyHeadroom,
 }
 
 /// Stored at ~/.clauth/profiles.toml — ordering and active marker only.
@@ -886,7 +892,8 @@ pub(crate) struct AppState {
     /// (issue #86): `chain` (the default) walks by chain position exactly as
     /// it always has; `soonest-weekly-reset` lands each pass on the accepted
     /// member whose weekly window resets soonest, so less quota expires
-    /// unspent. `None` = the [`WalkOrder`] default, so an untouched
+    /// unspent; `most-weekly-headroom` on the one whose week is least used.
+    /// `None` = the [`WalkOrder`] default, so an untouched
     /// profiles.toml carries neither this key nor the setting and walks
     /// byte-identically to before the key existed. Read through
     /// [`AppState::walk_order`].

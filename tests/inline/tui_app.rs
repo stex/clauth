@@ -8250,6 +8250,23 @@ fn walk_order_space_cycles_and_persists() {
     super::handle_global_config_key(&mut app, key(KeyCode::Char(' ')));
     assert_eq!(
         app.config().state.walk_order(),
+        crate::profile::WalkOrder::MostWeeklyHeadroom,
+        "space cycles on to most weekly headroom"
+    );
+    let reloaded: crate::profile::AppState = toml::from_str(
+        &std::fs::read_to_string(crate::profile::clauth_dir().unwrap().join("profiles.toml"))
+            .expect("read profiles.toml"),
+    )
+    .expect("parse profiles.toml");
+    assert_eq!(
+        reloaded.walk_order(),
+        crate::profile::WalkOrder::MostWeeklyHeadroom,
+        "the third value persists to disk too"
+    );
+
+    super::handle_global_config_key(&mut app, key(KeyCode::Char(' ')));
+    assert_eq!(
+        app.config().state.walk_order(),
         crate::profile::WalkOrder::Chain,
         "space cycles back to chain"
     );

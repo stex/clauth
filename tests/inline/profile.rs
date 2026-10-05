@@ -553,13 +553,13 @@ fn app_state_reads_burn_aware_switching_true() {
     assert!(state.burn_aware_switching);
 }
 
-// `walk_order` (issue #86) defaults to `chain` and its on-disk spelling is
-// the hyphenated `soonest-weekly-reset` — the serde rename is the load
-// boundary, so a rename typo must red here, not on an operator's first save.
-// Unset is omitted from a stock file (the `reset_display` Option contract),
-// and BOTH values round-trip.
+// `walk_order` (issue #86) defaults to `chain` and its on-disk spellings are
+// the hyphenated `soonest-weekly-reset` and `most-weekly-headroom` — the serde
+// rename is the load boundary, so a rename typo must red here, not on an
+// operator's first save. Unset is omitted from a stock file (the
+// `reset_display` Option contract), and EVERY value round-trips.
 #[test]
-fn app_state_walk_order_defaults_chain_and_both_values_round_trip() {
+fn app_state_walk_order_defaults_chain_and_every_value_round_trips() {
     let state: AppState = toml::from_str("profiles = []\n").expect("parse state");
     assert_eq!(state.walk_order(), WalkOrder::Chain);
     assert!(
@@ -590,6 +590,16 @@ fn app_state_walk_order_defaults_chain_and_both_values_round_trip() {
     );
     let reparsed_chain: AppState = toml::from_str(&rendered_chain).expect("reparse chain state");
     assert_eq!(reparsed_chain.walk_order(), WalkOrder::Chain);
+
+    let headroom: AppState =
+        toml::from_str("profiles = []\nwalk_order = \"most-weekly-headroom\"\n")
+            .expect("parse the hand-written spelling");
+    assert_eq!(headroom.walk_order(), WalkOrder::MostWeeklyHeadroom);
+    let rendered_headroom = toml::to_string_pretty(&headroom).expect("render headroom state");
+    assert!(
+        rendered_headroom.contains("walk_order = \"most-weekly-headroom\""),
+        "must render the hyphenated spelling, got:\n{rendered_headroom}"
+    );
 }
 
 // On must round-trip explicitly; off (the default) is omitted entirely from
