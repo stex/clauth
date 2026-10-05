@@ -143,7 +143,7 @@ clauth keeps no file for the queue: it derives the last open from `usage_history
 | `burn_aware_switching` | bool | `false` | project usage forward instead of comparing to the threshold |
 | `burn_switch_floor_pct` | float | `98.0` | earliest point burn-aware may switch, 90-100 |
 | `burn_horizon_cap_ms` | int | `60000` | how far ahead burn-aware projects |
-| `walk_order` | string | `chain` | reorder each accept pass by the soonest-resetting 7d window: `chain` or `soonest-weekly-reset` |
+| `walk_order` | string | `chain` | order each accept pass by chain position, the soonest-resetting 7d window or the least-used 7d window: `chain`, `soonest-weekly-reset` or `most-weekly-headroom` |
 | `wrap_off` | bool | `false` | switch off all accounts once the chain is out of quota |
 | `spend_budget_switching` | bool | `false` | master switch for pay-as-you-go fallback |
 | `switch_off_when_budget_spent` | bool | `true` | switch off once the spend ceiling is used up |
