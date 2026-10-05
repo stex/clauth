@@ -267,6 +267,7 @@ Two accounts naming the same day is not rejected: the chain returns to whichever
   rotation-locks/<name>.lock  # one OAuth-rotation lock per account
   keychain-quarantine/     # macOS: raw bytes of a corrupted Keychain item, saved before clauth overwrites or deletes it
   keychain-item-owners.json # which per-session Keychain items clauth seeded; the census deletes nothing else
+  keychain-which-cache/     # macOS: one cached Keychain read per service backing `clauth which`, ~30 s TTL (0600, swept after a day)
   profiles/
     work/
       config.toml          # everything in the table above
