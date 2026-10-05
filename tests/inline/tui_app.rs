@@ -9436,6 +9436,51 @@ mod env_editor {
         app
     }
 
+    /// Space on a saved account's `model` row walks default → fable → opus →
+    /// sonnet → haiku → opusplan → default, and each step lands on disk.
+    #[test]
+    fn space_on_a_saved_accounts_model_row_cycles_fable_first_and_persists() {
+        let _home = HomeSandbox::new();
+        let profile = Profile::new("acct".to_string(), None, None);
+        crate::profile::save_app_state(&AppState {
+            profiles: vec![profile.name.clone()],
+            ..AppState::default()
+        })
+        .expect("save state");
+        crate::profile::save_profile(&profile).expect("save profile");
+        let mut app = app_with_profile(profile);
+        enter_detail(&mut app);
+        app.config_action_cursor = config_rows(&app)
+            .iter()
+            .position(|r| *r == ConfigRow::Model)
+            .expect("a saved account carries the model row");
+
+        for expected in [
+            Some("fable"),
+            Some("opus"),
+            Some("sonnet"),
+            Some("haiku"),
+            Some("opusplan"),
+            None,
+        ] {
+            super::super::handle_key(&mut app, crate::testutil::key(KeyCode::Char(' ')));
+            let on_disk = crate::profile::load_config()
+                .expect("reload")
+                .profiles
+                .into_iter()
+                .find(|p| p.name == "acct")
+                .expect("the account is on disk")
+                .models
+                .default;
+            assert_eq!(on_disk.as_deref(), expected);
+            assert_eq!(
+                app.config_draft.as_ref().map(|d| d.model.value.as_str()),
+                Some(expected.unwrap_or("")),
+                "the row's buffer follows the saved value"
+            );
+        }
+    }
+
     /// Typing into an OAuth account's empty base url turns it into an api
     /// account mid-edit: `auto-start` above the field drops out and `api key`
     /// joins below it. The cursor stays on the field being typed into, and on
@@ -11186,7 +11231,7 @@ mod new_account_model_row {
         let mut app = empty_app();
         enter_new_account_form(&mut app);
 
-        for expected in ["opus", "sonnet", "haiku", "opusplan"] {
+        for expected in ["fable", "opus", "sonnet", "haiku", "opusplan"] {
             cycle_model(&mut app);
             assert_eq!(app.config_draft.as_ref().unwrap().model.value, expected);
         }
@@ -11206,7 +11251,7 @@ mod new_account_model_row {
         if let Some(d) = app.config_draft.as_mut() {
             d.name = InputState::new("fresh");
         }
-        cycle_model(&mut app); // "" -> "opus"
+        cycle_model(&mut app); // "" -> "fable"
 
         commit_new_account(&mut app);
 
@@ -11214,7 +11259,7 @@ mod new_account_model_row {
             app.config()
                 .find(&crate::profile::ProfileName::from("fresh"))
                 .and_then(|p| p.models.default.clone()),
-            Some("opus".to_string()),
+            Some("fable".to_string()),
             "the model picked on the create form persists to the new profile"
         );
     }

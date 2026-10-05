@@ -1334,6 +1334,7 @@ fn day_list_lines(
         custom
             .as_ref()
             .map(|(value, active)| (value.as_str(), *active)),
+        None,
         selected,
         width,
     )

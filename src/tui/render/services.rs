@@ -29,9 +29,9 @@ use super::super::app::{
 use super::super::theme;
 use super::format::{middle_truncate, spinner_frame};
 use super::panes::{
-    cycle_option, draw_scrollbar, draw_scrolled_lines, empty_state, head_cols, help_tooltip_lines,
-    highlight_row, invalid_tooltip_lines, key_cell, label_style, master_detail, section_box,
-    value_caret, wrap_words,
+    cycle_row_lines, draw_scrollbar, draw_scrolled_lines, empty_state, head_cols,
+    help_tooltip_lines, highlight_row, invalid_tooltip_lines, key_cell, label_style, master_detail,
+    section_box, value_caret, wrap_words,
 };
 use super::prose;
 use crate::format::truncate;
@@ -636,7 +636,14 @@ fn draw_herdr_detail(frame: &mut Frame<'_>, inner: Rect, app: &App, mut lines: V
         if selected {
             focus.0 = lines.len();
         }
-        let line = option_row(*row, &settings, selected, row_editing, inert);
+        let row_lines = option_row(
+            *row,
+            &settings,
+            selected,
+            row_editing,
+            inert,
+            inner.width as usize,
+        );
         match row_editing {
             Some(input) => {
                 // The edit row renders plain (no highlight) with the edit
@@ -646,15 +653,17 @@ fn draw_herdr_detail(frame: &mut Frame<'_>, inner: Rect, app: &App, mut lines: V
                     (2 + row.label().chars().count() + 2 + head_cols(input)) as u16,
                 );
                 caret = Some((cx, lines.len()));
-                lines.push(line);
+                lines.extend(row_lines);
                 lines.extend(tag_refresh_range_tooltip(input, inner.width as usize));
             }
             None => {
-                lines.push(if selected {
-                    highlight_row(line, inner.width as usize)
-                } else {
-                    line
-                });
+                for line in row_lines {
+                    lines.push(if selected {
+                        highlight_row(line, inner.width as usize)
+                    } else {
+                        line
+                    });
+                }
                 if selected && inert {
                     lines.extend(help_tooltip_lines(
                         herdr_row_text_tooltip(app),
@@ -693,7 +702,8 @@ fn option_row(
     selected: bool,
     editing: Option<&InputState>,
     inert: bool,
-) -> Line<'static> {
+    width: usize,
+) -> Vec<Line<'static>> {
     let arrow = if editing.is_some() {
         Span::styled(format!("{} ", theme::edit_glyph()), theme::accent().bold())
     } else if selected && inert {
@@ -711,21 +721,14 @@ fn option_row(
     let mut spans = vec![arrow, Span::styled(format!("{}  ", row.label()), key_style)];
     match row {
         HerdrOption::PopupWidth => {
-            let width = settings.popup_width;
-            for (i, (label, active)) in [
-                ("fit", width == PopupWidth::Fit),
-                ("half", width == PopupWidth::Half),
-                ("split-right", width == PopupWidth::SplitRight),
-                ("split-top", width == PopupWidth::SplitTop),
-            ]
-            .iter()
-            .enumerate()
-            {
-                if i > 0 {
-                    spans.push(Span::raw("  "));
-                }
-                spans.push(cycle_option(label, *active, selected));
-            }
+            let popup = settings.popup_width;
+            let options = [
+                ("fit", popup == PopupWidth::Fit),
+                ("half", popup == PopupWidth::Half),
+                ("split-right", popup == PopupWidth::SplitRight),
+                ("split-top", popup == PopupWidth::SplitTop),
+            ];
+            return cycle_row_lines(spans, &options, None, None, selected, width);
         }
         HerdrOption::PaneTag => spans.extend(toggle_value(settings.pane_tag, inert)),
         HerdrOption::TagRefresh => match editing {
@@ -750,7 +753,7 @@ fn option_row(
             spans.extend(toggle_value(settings.delegate_row_text, inert))
         }
     }
-    Line::from(spans)
+    vec![Line::from(spans)]
 }
 
 /// A toggle row's value: the tier's glyph from [`theme::toggle_on`] /

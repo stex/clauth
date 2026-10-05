@@ -1809,6 +1809,206 @@ fn the_home_tab_row_wraps_between_chips_at_a_narrow_pane() {
     );
 }
 
+/// At 80 columns the Setup pane holds 52 cells: the `model` cycle with `fable`
+/// picked breaks before `haiku` onto a line indented to the value column
+/// instead of cutting `haiku` mid-word.
+#[test]
+fn the_setup_model_row_wraps_between_options_at_80_columns() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::testutil::key;
+    use crate::tui::app::Tab;
+    use ratatui::crossterm::event::KeyCode;
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: Vec::new(),
+    });
+    app.tab = Tab::Setup;
+    for k in [
+        KeyCode::Enter,
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Char(' '),
+    ] {
+        crate::tui::app::handle_key(&mut app, key(k));
+    }
+    let out = dump(&app, 80, 32);
+    assert_eq!(
+        detail_block(&out, "model ", 2, 3),
+        [
+            "❯ model           default  [fable]  opus  sonnet",
+            "                  haiku  opusplan",
+            "  + login",
+        ],
+        "{out}"
+    );
+}
+
+/// A preset ladder with a custom value and its `default:` reminder wraps the
+/// way the run does: the custom value stays on the run's line while it fits
+/// whole, and the reminder opens its own line at the value column.
+#[test]
+fn a_config_ladder_row_wraps_its_custom_value_and_reminder() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::tui::app::{GLOBAL_CONFIG_ROWS, GlobalConfigRow, Tab};
+    let mut app = App::new(AppConfig {
+        state: AppState {
+            refresh_interval_ms: 45_000,
+            ..AppState::default()
+        },
+        profiles: Vec::new(),
+    });
+    app.tab = Tab::Config;
+    app.global_config_cursor = GLOBAL_CONFIG_ROWS
+        .iter()
+        .position(|r| *r == GlobalConfigRow::RefreshInterval)
+        .expect("refresh row");
+    let out = dump(&app, 60, 40);
+    assert_eq!(
+        detail_block(&out, "refresh ", 2, 2),
+        [
+            "❯ refresh            15s  30s  60s  90s  120s  300s  45s",
+            "                     default: 90s",
+        ],
+        "{out}"
+    );
+}
+
+/// The fit counts the active option's bracket pair whether or not the row holds
+/// the cursor, so focus never moves a break: at 17 cells the blurred run
+/// `aa  bb  cc` would fit on one line, but the focused `aa  [bb]  cc` would
+/// not, and both break before `cc`.
+#[test]
+fn a_cycle_row_breaks_at_the_same_option_focused_or_not() {
+    use super::panes::cycle_row_lines;
+    use ratatui::text::{Line, Span};
+    let lead = || vec![Span::raw("  "), Span::raw("key  ")];
+    let options = [("aa", false), ("bb", true), ("cc", false)];
+    let text = |lines: Vec<Line<'static>>| -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    };
+    assert_eq!(
+        text(cycle_row_lines(lead(), &options, None, None, false, 17)),
+        ["  key  aa  bb", "       cc"]
+    );
+    assert_eq!(
+        text(cycle_row_lines(lead(), &options, None, None, true, 17)),
+        ["  key  aa  [bb]", "       cc"]
+    );
+}
+
+/// Fits count screen cells, not chars: `中中中` is 3 chars but 6 cells, so at
+/// 14 cells it cannot join `aa` (9 + 2 + 6 = 17) and opens its own line.
+#[test]
+fn a_cycle_row_measures_wide_glyphs_in_cells() {
+    use super::panes::cycle_row_lines;
+    use ratatui::text::Span;
+    let lines = cycle_row_lines(
+        vec![Span::raw("  "), Span::raw("key  ")],
+        &[("aa", false)],
+        Some(("中中中", true)),
+        None,
+        false,
+        14,
+    );
+    let text: Vec<String> = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    assert_eq!(text, ["  key  aa", "       中中中"]);
+
+    // Each word of the value is measured too: `中中` is 4 cells, so the second
+    // cannot join the first (7 + 4 + 1 + 4 = 16 > 14).
+    let lines = cycle_row_lines(
+        vec![Span::raw("  "), Span::raw("key  ")],
+        &[("aa", false)],
+        Some(("中中 中中", true)),
+        None,
+        false,
+        14,
+    );
+    let text: Vec<String> = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    assert_eq!(text, ["  key  aa", "       中中", "       中中"]);
+}
+
+/// An appended value too wide for the value column drops alone to its own line
+/// under the label; the options keep the value column. At 14 cells `key`'s
+/// value column holds 7 cells, the 10-cell custom value cannot sit there, and
+/// `aa  bb` still can.
+#[test]
+fn a_custom_value_too_wide_for_the_value_column_drops_alone() {
+    use super::panes::cycle_row_lines;
+    use ratatui::text::Span;
+    let lines = cycle_row_lines(
+        vec![Span::raw("  "), Span::raw("key  ")],
+        &[("aa", false), ("bb", false)],
+        Some(("abcdefghij", true)),
+        None,
+        false,
+        14,
+    );
+    let text: Vec<String> = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    assert_eq!(text, ["  key  aa  bb", "  abcdefghij"]);
+
+    // The boundary, in cells: a 7-cell value exactly fills the value column
+    // (7 + 7 = 14) and stays there; `中中中中` is 4 chars but 8 cells and drops.
+    for (value, want) in [
+        ("abcdefg", ["  key  aa  bb", "       abcdefg"]),
+        ("中中中中", ["  key  aa  bb", "  中中中中"]),
+    ] {
+        let lines = cycle_row_lines(
+            vec![Span::raw("  "), Span::raw("key  ")],
+            &[("aa", false), ("bb", false)],
+            Some((value, true)),
+            None,
+            false,
+            14,
+        );
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(text, want, "{value}");
+    }
+}
+
+/// The Setup `model` row with a custom id wider than its value column: the
+/// presets wrap at the value column and the id alone drops under the label.
+#[test]
+fn the_setup_model_row_drops_only_a_long_custom_id_under_its_label() {
+    let _home = crate::testutil::HomeSandbox::new();
+    use crate::testutil::key;
+    use crate::tui::app::Tab;
+    use ratatui::crossterm::event::KeyCode;
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: Vec::new(),
+    });
+    app.tab = Tab::Setup;
+    crate::tui::app::handle_key(&mut app, key(KeyCode::Enter));
+    if let Some(d) = app.config_draft.as_mut() {
+        d.model = crate::tui::app::InputState::new("us.anthropic.claude-opus-4-1-20250805-v1:0");
+    }
+    let out = dump(&app, 80, 32);
+    assert_eq!(
+        detail_block(&out, "model ", 2, 3),
+        [
+            "  model           default  fable  opus  sonnet",
+            "                  haiku  opusplan",
+            "  us.anthropic.claude-opus-4-1-20250805-v1:0",
+        ],
+        "{out}"
+    );
+}
+
 /// The block-vs-row scroll rule, pinned off the pure function instead of live
 /// hint copy: the screen test above only discriminates while some real hint
 /// happens to wrap past the viewport, so rewording one silently retires it.

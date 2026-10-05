@@ -102,7 +102,7 @@ pub(super) fn key_cell(key: &str, width: usize, gutter: usize) -> String {
 /// One segment of a cycle row: the active option renders `[label]` while the
 /// row holds the cursor (the bracket pair is the focus cue — the row widens by
 /// 2 on focus), bare `label` otherwise. Active → `ACCENT`, rest `TEXT_FAINT`.
-pub(super) fn cycle_option(label: &str, active: bool, row_selected: bool) -> Span<'static> {
+fn cycle_option(label: &str, active: bool, row_selected: bool) -> Span<'static> {
     let style = if active {
         theme::accent()
     } else {
@@ -124,66 +124,93 @@ const STACK_INDENT: usize = 2;
 /// `custom` value matching no option trails the run the same 2 cells out,
 /// never bracketed (the refresh row's appended value): `ACCENT` while it is the
 /// row's value, `TEXT_FAINT` while it is only a stop the cycle can return to.
+/// A `reminder` (the off-default `default: X` note) trails last, 3 cells out,
+/// `TEXT_FAINT`.
 ///
 /// A run too wide for `width` breaks between chips onto continuation lines
-/// indented to the value column, never inside a chip. The custom value shares
-/// the run's last line only when it fits there whole, else opens a line of its
-/// own, breaking between its words where even that cannot hold it, so it never
-/// reads as one more word of the run. When the value column cannot hold the
-/// widest chip at all, the whole run drops under the key instead: stacked
-/// rather than clipped. The widest chip counts its brackets whether or not the
-/// row holds the cursor, so focus never flips a row between the two layouts.
+/// indented to the value column, never inside a chip. The custom value and the
+/// reminder each share the line before them only when they fit there whole,
+/// else open a line of their own, breaking between their words where even that
+/// cannot hold them, so neither reads as one more word of the run. When the
+/// value column cannot hold the widest option at all, the whole run drops under
+/// the key instead: stacked rather than clipped. A custom value or reminder
+/// with a word the value column cannot hold drops alone the same way, and the
+/// options keep the value column. Every fit counts the active option's
+/// brackets whether or not the row holds the cursor, so focus never moves a
+/// break or flips a row between the layouts.
 pub(super) fn cycle_row_lines(
     lead: Vec<Span<'static>>,
     options: &[(&str, bool)],
     custom: Option<(&str, bool)>,
+    reminder: Option<&str>,
     row_selected: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
     let value_col: usize = lead.iter().map(Span::width).sum();
-    // Each chip with the gap that opens it: the options 2 cells apart, the
-    // custom value's words 1 apart after its own 2-cell lead.
-    let mut chips: Vec<(usize, Span<'static>)> = options
+    let widest_option = options
         .iter()
-        .map(|(label, active)| (2, cycle_option(label, *active, row_selected)))
-        .collect();
-    let run = chips.len();
-    let mut whole = 0;
-    if let Some((value, active)) = custom {
-        let style = if active {
-            theme::accent()
-        } else {
-            theme::faint()
-        };
-        whole = value.chars().count();
-        chips.extend(value.split_whitespace().enumerate().map(|(i, word)| {
-            let gap = if i == 0 { 2 } else { 1 };
-            (gap, Span::styled(word.to_string(), style))
-        }));
-    }
-    let widest = options
-        .iter()
-        .map(|(label, _)| label.chars().count() + 2)
-        .chain(chips[run..].iter().map(|(_, word)| word.width()))
+        .map(|(label, _)| Span::raw(*label).width() + 2)
         .max()
         .unwrap_or(0);
-    let stacked = value_col + widest > width;
-    let indent = if stacked { STACK_INDENT } else { value_col };
-    let blank = || Line::from(Span::raw(" ".repeat(indent)));
+    let stacked = value_col + widest_option > width;
+    let run_indent = if stacked { STACK_INDENT } else { value_col };
+    // Each chip with the gap that opens it, the cells it holds whether or not
+    // the row is focused, the room it asks of its line, and the indent its
+    // lines open at: the options 2 cells apart, a trailing group's words 1
+    // apart after its own lead, its first word asking room for the whole group.
+    let mut chips: Vec<(usize, Span<'static>, usize, usize, usize)> = options
+        .iter()
+        .map(|(label, active)| {
+            let chip = cycle_option(label, *active, row_selected);
+            let fit = chip.width() + if *active && !row_selected { 2 } else { 0 };
+            (2, chip, fit, fit, run_indent)
+        })
+        .collect();
+    let mut trail = |text: &str, lead_gap: usize, style: Style| {
+        let whole = Span::raw(text).width();
+        let widest_word = text
+            .split_whitespace()
+            .map(|w| Span::raw(w).width())
+            .max()
+            .unwrap_or(0);
+        let indent = if run_indent + widest_word > width {
+            STACK_INDENT
+        } else {
+            run_indent
+        };
+        chips.extend(text.split_whitespace().enumerate().map(|(i, word)| {
+            let chip = Span::styled(word.to_string(), style);
+            let fit = chip.width();
+            let (gap, ask) = if i == 0 { (lead_gap, whole) } else { (1, fit) };
+            (gap, chip, fit, ask, indent)
+        }));
+    };
+    if let Some((value, active)) = custom {
+        trail(
+            value,
+            2,
+            if active {
+                theme::accent()
+            } else {
+                theme::faint()
+            },
+        );
+    }
+    if let Some(text) = reminder {
+        trail(text, 3, theme::faint());
+    }
+    let blank = |indent: usize| Line::from(Span::raw(" ".repeat(indent)));
 
     let mut out = vec![Line::from(lead)];
     let mut used = value_col;
     if stacked {
-        out.push(blank());
-        used = indent;
+        out.push(blank(run_indent));
+        used = run_indent;
     }
     let mut fresh = true;
-    for (i, (gap, chip)) in chips.into_iter().enumerate() {
-        let w = chip.width();
-        // The custom value's first word asks room for the whole value.
-        let custom_wraps = i == run && used + gap + whole > width;
-        if !fresh && (custom_wraps || used + gap + w > width) {
-            out.push(blank());
+    for (gap, chip, fit, ask, indent) in chips {
+        if !fresh && used + gap + ask > width {
+            out.push(blank(indent));
             used = indent;
             fresh = true;
         }
@@ -194,7 +221,7 @@ pub(super) fn cycle_row_lines(
             }
             line.spans.push(chip);
         }
-        used += w;
+        used += fit;
         fresh = false;
     }
     out

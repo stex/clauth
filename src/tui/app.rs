@@ -514,7 +514,7 @@ impl ConfigRow {
 
 /// The `model` row alias cycle (space advances it). `None` renders as `default`
 /// (no `model` key); a custom id set via ⏎ is outside this list.
-pub(crate) const MODEL_PRESETS: [&str; 4] = ["opus", "sonnet", "haiku", "opusplan"];
+pub(crate) const MODEL_PRESETS: [&str; 5] = ["fable", "opus", "sonnet", "haiku", "opusplan"];
 
 /// The alias-override rows, in the order Setup lists them.
 const OVERRIDE_ROWS: [ConfigRow; 5] = [
@@ -11259,8 +11259,9 @@ fn cycle_model(app: &mut App) {
     }
 }
 
-/// Advance the `model` alias cycle: default → opus → sonnet → haiku → opusplan →
-/// default. A value outside [`MODEL_PRESETS`] (a custom id) collapses to default.
+/// Advance the `model` alias cycle: default → fable → opus → sonnet → haiku →
+/// opusplan → default. A value outside [`MODEL_PRESETS`] (a custom id)
+/// collapses to default.
 fn next_model_preset(current: Option<&str>) -> Option<String> {
     match current {
         None => Some(MODEL_PRESETS[0].to_string()),

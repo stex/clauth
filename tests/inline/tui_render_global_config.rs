@@ -10,8 +10,26 @@ fn line_text(line: &Line<'static>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
+/// Wide enough that no row wraps: these pins are about one line's geometry.
+const WIDE: usize = 200;
+
 fn row(key: &str, options: &[(&str, bool)], selected: bool) -> String {
-    line_text(&cycle_row(Span::raw("  "), key, options, selected))
+    let lines = cycle_row(Span::raw("  "), key, options, selected, WIDE);
+    assert_eq!(lines.len(), 1, "a wide pane holds the row on one line");
+    line_text(&lines[0])
+}
+
+/// [`detail_row`] in a pane wide enough that the row is one line.
+fn one_row(
+    r: GlobalConfigRow,
+    selected: bool,
+    rows: RowState,
+    tunables: RowTunables,
+    editing: Option<&InputState>,
+) -> Line<'static> {
+    let mut lines = detail_row(r, selected, rows, tunables, editing, WIDE);
+    assert_eq!(lines.len(), 1, "a wide pane holds the row on one line");
+    lines.remove(0)
 }
 
 /// Column `key`'s value starts at: the first non-space cell past the key text.
@@ -70,7 +88,7 @@ fn key_cell_is_uniform_width() {
 fn every_blurred_row_starts_its_value_at_the_shared_column() {
     let value_col = 2 + KEY_W + KEY_GUTTER;
     for r in GLOBAL_CONFIG_ROWS {
-        let line = line_text(&detail_row(r, false, toggles(), tunables(), None));
+        let line = line_text(&one_row(r, false, toggles(), tunables(), None));
         let before: String = line.chars().take(value_col).collect();
         assert!(
             before.ends_with(&" ".repeat(KEY_GUTTER)),
@@ -89,7 +107,7 @@ fn every_blurred_row_starts_its_value_at_the_shared_column() {
 #[test]
 fn selection_caret_is_bold_like_every_other_card() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
-    let line = detail_row(GlobalConfigRow::Theme, true, toggles(), tunables(), None);
+    let line = one_row(GlobalConfigRow::Theme, true, toggles(), tunables(), None);
     let caret = &line.spans[0];
     assert!(
         caret.style.add_modifier.contains(Modifier::BOLD),
@@ -130,7 +148,7 @@ fn home_tab_renders_in_the_appearance_band_at_the_shared_value_column() {
         if r.band() != "appearance" {
             continue;
         }
-        let line = line_text(&detail_row(r, false, toggles(), tunables(), None));
+        let line = line_text(&one_row(r, false, toggles(), tunables(), None));
         if line.contains("home tab") {
             found = true;
             for name in [
@@ -230,7 +248,7 @@ fn edit_line_buffer_starts_at_the_value_column() {
 #[test]
 fn auto_start_queue_renders_as_a_toggle_with_both_hints_pinned() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
-    let on = line_text(&detail_row(
+    let on = line_text(&one_row(
         GlobalConfigRow::AutoStartQueue,
         false,
         toggles(),
@@ -242,7 +260,7 @@ fn auto_start_queue_renders_as_a_toggle_with_both_hints_pinned() {
 
     let mut off = toggles();
     off.auto_start_queue = false;
-    let off_line = line_text(&detail_row(
+    let off_line = line_text(&one_row(
         GlobalConfigRow::AutoStartQueue,
         false,
         off,
@@ -271,7 +289,7 @@ fn auto_start_queue_renders_as_a_toggle_with_both_hints_pinned() {
 #[test]
 fn refresh_spent_renders_as_a_toggle_not_a_cycle() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
-    let on = line_text(&detail_row(
+    let on = line_text(&one_row(
         GlobalConfigRow::RefreshSpentAccounts,
         false,
         toggles(),
@@ -286,7 +304,7 @@ fn refresh_spent_renders_as_a_toggle_not_a_cycle() {
 
     let mut off = toggles();
     off.refresh_spent = false;
-    let off_line = line_text(&detail_row(
+    let off_line = line_text(&one_row(
         GlobalConfigRow::RefreshSpentAccounts,
         false,
         off,
@@ -312,7 +330,7 @@ fn auto_start_queue_dims_when_no_account_opts_in() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
     let mut none_opted = toggles();
     none_opted.any_auto_start = false;
-    let dimmed = detail_row(
+    let dimmed = one_row(
         GlobalConfigRow::AutoStartQueue,
         false,
         none_opted,
@@ -328,7 +346,7 @@ fn auto_start_queue_dims_when_no_account_opts_in() {
         dimmed.spans,
     );
 
-    let live = detail_row(
+    let live = one_row(
         GlobalConfigRow::AutoStartQueue,
         false,
         toggles(),
@@ -350,7 +368,7 @@ fn auto_start_queue_dims_when_no_account_opts_in() {
 #[test]
 fn money_spent_dims_when_spend_budget_is_off() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
-    let dimmed = detail_row(
+    let dimmed = one_row(
         GlobalConfigRow::SwitchOffWhenBudgetSpent,
         false,
         toggles(), // spend_budget: false
@@ -368,7 +386,7 @@ fn money_spent_dims_when_spend_budget_is_off() {
 
     let mut on = toggles();
     on.spend_budget = true;
-    let live = line_text(&detail_row(
+    let live = line_text(&one_row(
         GlobalConfigRow::SwitchOffWhenBudgetSpent,
         true,
         on,
@@ -403,7 +421,7 @@ fn money_spent_hint_states_the_halt_not_inertness() {
 /// default — the operator sees the default exactly when they've moved off it.
 #[test]
 fn a_non_default_value_shows_a_faint_default_reminder() {
-    let off = line_text(&detail_row(
+    let off = line_text(&one_row(
         GlobalConfigRow::RefreshInterval,
         false,
         toggles(),
@@ -414,11 +432,31 @@ fn a_non_default_value_shows_a_faint_default_reminder() {
         },
         None,
     ));
-    assert!(
-        off.contains("default: 90s"),
-        "off-default carries it: {off}"
+    assert_eq!(
+        off, "  refresh            15s  30s  60s  90s  120s  300s   default: 90s",
+        "off-default carries it 3 cells out"
     );
-    let default = line_text(&detail_row(
+    let off_line = one_row(
+        GlobalConfigRow::RefreshInterval,
+        false,
+        toggles(),
+        RowTunables {
+            refresh_interval_ms: 30_000,
+            weekly_pct: 98.0,
+            ..tunables()
+        },
+        None,
+    );
+    for word in ["default:", "90s"] {
+        let span = off_line
+            .spans
+            .iter()
+            .rev()
+            .find(|s| s.content == word)
+            .unwrap_or_else(|| panic!("the reminder's `{word}` renders"));
+        assert_eq!(span.style, theme::faint(), "`{word}` is faint");
+    }
+    let default = line_text(&one_row(
         GlobalConfigRow::RefreshInterval,
         false,
         toggles(),
@@ -441,7 +479,7 @@ fn a_non_default_value_shows_a_faint_default_reminder() {
 /// the four presets. `None` brackets `off`; a preset value brackets its chip.
 #[test]
 fn context_nudge_cycle_line_renders_off_then_presets() {
-    let off = line_text(&detail_row(
+    let off = line_text(&one_row(
         GlobalConfigRow::ContextNudge,
         true,
         toggles(),
@@ -455,7 +493,7 @@ fn context_nudge_cycle_line_renders_off_then_presets() {
 
     let mut set = tunables();
     set.context_nudge_tokens = Some(300_000);
-    let low = line_text(&detail_row(
+    let low = line_text(&one_row(
         GlobalConfigRow::ContextNudge,
         true,
         toggles(),
@@ -470,7 +508,7 @@ fn context_nudge_cycle_line_renders_off_then_presets() {
 
     let mut set = tunables();
     set.context_nudge_tokens = Some(900_000);
-    let high = line_text(&detail_row(
+    let high = line_text(&one_row(
         GlobalConfigRow::ContextNudge,
         true,
         toggles(),
@@ -488,7 +526,7 @@ fn context_nudge_cycle_line_renders_off_then_presets() {
 fn context_nudge_custom_value_appends_in_accent_without_bracketing_a_preset() {
     let mut set = tunables();
     set.context_nudge_tokens = Some(450_000);
-    let line = detail_row(GlobalConfigRow::ContextNudge, true, toggles(), set, None);
+    let line = one_row(GlobalConfigRow::ContextNudge, true, toggles(), set, None);
     assert!(
         !line_text(&line).contains('['),
         "no preset may bracket: {}",
@@ -508,7 +546,7 @@ fn context_nudge_custom_value_appends_in_accent_without_bracketing_a_preset() {
 
     let mut set = tunables();
     set.context_nudge_tokens = Some(450_500);
-    let plain = line_text(&detail_row(
+    let plain = line_text(&one_row(
         GlobalConfigRow::ContextNudge,
         false,
         toggles(),
@@ -522,7 +560,7 @@ fn context_nudge_custom_value_appends_in_accent_without_bracketing_a_preset() {
 
     let mut set = tunables();
     set.context_nudge_tokens = Some(1_000_000);
-    let million = line_text(&detail_row(
+    let million = line_text(&one_row(
         GlobalConfigRow::ContextNudge,
         false,
         toggles(),
@@ -541,7 +579,7 @@ fn context_nudge_custom_value_appends_in_accent_without_bracketing_a_preset() {
 fn context_nudge_default_reminder_appears_only_when_set() {
     let mut set = tunables();
     set.context_nudge_tokens = Some(600_000);
-    let on = line_text(&detail_row(
+    let on = line_text(&one_row(
         GlobalConfigRow::ContextNudge,
         false,
         toggles(),
@@ -550,7 +588,7 @@ fn context_nudge_default_reminder_appears_only_when_set() {
     ));
     assert!(on.contains("default: off"), "a set value carries it: {on}");
 
-    let off = line_text(&detail_row(
+    let off = line_text(&one_row(
         GlobalConfigRow::ContextNudge,
         false,
         toggles(),
@@ -677,7 +715,7 @@ fn auto_update_renders_the_toggle_glyphs_and_exact_hints() {
     off_state.auto_update = false;
     {
         let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
-        let on = line_text(&detail_row(
+        let on = line_text(&one_row(
             GlobalConfigRow::AutoUpdate,
             false,
             toggles(),
@@ -688,7 +726,7 @@ fn auto_update_renders_the_toggle_glyphs_and_exact_hints() {
             on.contains("─●"),
             "full-tier on renders the slide switch: {on}"
         );
-        let off = line_text(&detail_row(
+        let off = line_text(&one_row(
             GlobalConfigRow::AutoUpdate,
             false,
             off_state,
@@ -702,7 +740,7 @@ fn auto_update_renders_the_toggle_glyphs_and_exact_hints() {
     }
     {
         let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Compatible);
-        let on = line_text(&detail_row(
+        let on = line_text(&one_row(
             GlobalConfigRow::AutoUpdate,
             false,
             toggles(),
@@ -713,7 +751,7 @@ fn auto_update_renders_the_toggle_glyphs_and_exact_hints() {
             on.contains("[on]"),
             "compatible-tier on renders the bracket: {on}"
         );
-        let off = line_text(&detail_row(
+        let off = line_text(&one_row(
             GlobalConfigRow::AutoUpdate,
             false,
             off_state,
@@ -760,7 +798,7 @@ fn non_login_keys_renders_the_toggle_and_exact_hints() {
     off_state.preserve_non_login_keys = false;
     {
         let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
-        let on = line_text(&detail_row(
+        let on = line_text(&one_row(
             GlobalConfigRow::PreserveNonLoginKeys,
             false,
             toggles(),
@@ -772,7 +810,7 @@ fn non_login_keys_renders_the_toggle_and_exact_hints() {
             on.contains("─●"),
             "full-tier on renders the slide switch: {on}"
         );
-        let off = line_text(&detail_row(
+        let off = line_text(&one_row(
             GlobalConfigRow::PreserveNonLoginKeys,
             false,
             off_state,
@@ -786,7 +824,7 @@ fn non_login_keys_renders_the_toggle_and_exact_hints() {
     }
     {
         let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Compatible);
-        let off = line_text(&detail_row(
+        let off = line_text(&one_row(
             GlobalConfigRow::PreserveNonLoginKeys,
             false,
             off_state,
@@ -845,7 +883,7 @@ fn value_rows_interpolate_the_live_value_into_their_hint() {
 fn burn_tunables_dim_when_burn_aware_is_off() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
     for r in [GlobalConfigRow::BurnFloor, GlobalConfigRow::BurnHorizon] {
-        let dimmed = detail_row(r, false, toggles(), tunables(), None);
+        let dimmed = one_row(r, false, toggles(), tunables(), None);
         assert!(
             dimmed
                 .spans
@@ -857,7 +895,7 @@ fn burn_tunables_dim_when_burn_aware_is_off() {
 
         let mut on = toggles();
         on.burn_aware = true;
-        let live = line_text(&detail_row(r, true, on, tunables(), None));
+        let live = line_text(&one_row(r, true, on, tunables(), None));
         assert!(
             live.contains('['),
             "{r:?} burn-aware on: live + focused brackets the active preset: {live}"
@@ -873,7 +911,7 @@ fn burn_tunables_dim_when_burn_aware_is_off() {
 fn walk_order_renders_as_a_cycle_with_both_hints_pinned() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
     let chain = toggles();
-    let line = line_text(&detail_row(
+    let line = line_text(&one_row(
         GlobalConfigRow::WalkOrder,
         false,
         chain,
@@ -894,7 +932,7 @@ fn walk_order_renders_as_a_cycle_with_both_hints_pinned() {
         walk_order: WalkOrder::SoonestWeeklyReset,
         ..toggles()
     };
-    let soonest_line = line_text(&detail_row(
+    let soonest_line = line_text(&one_row(
         GlobalConfigRow::WalkOrder,
         false,
         soonest,
@@ -922,7 +960,7 @@ fn walk_order_renders_as_a_cycle_with_both_hints_pinned() {
 #[test]
 fn rotation_row_is_live_on_every_platform() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
-    let row = detail_row(
+    let row = one_row(
         GlobalConfigRow::PreemptiveRotation,
         false,
         toggles(),
@@ -1035,7 +1073,7 @@ fn reset_display_row_shows_all_three_shapes() {
     ] {
         let mut rows = toggles();
         rows.reset_display = display;
-        let line = line_text(&detail_row(
+        let line = line_text(&one_row(
             GlobalConfigRow::ResetShape,
             true,
             rows,
@@ -1057,7 +1095,7 @@ fn reset_display_row_shows_all_three_shapes() {
 #[test]
 fn clock_row_dims_until_a_reset_renders_a_clock() {
     let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
-    let dimmed = detail_row(
+    let dimmed = one_row(
         GlobalConfigRow::ClockNotation,
         false,
         toggles(),
@@ -1076,7 +1114,7 @@ fn clock_row_dims_until_a_reset_renders_a_clock() {
     for display in [ResetDisplay::Clock, ResetDisplay::Both] {
         let mut rows = toggles();
         rows.reset_display = display;
-        let live = line_text(&detail_row(
+        let live = line_text(&one_row(
             GlobalConfigRow::ClockNotation,
             true,
             rows,

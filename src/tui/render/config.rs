@@ -14,9 +14,10 @@ use super::super::app::{
 };
 use super::super::theme;
 use super::panes::{
-    DETAIL_KEY_GUTTER, DETAIL_KEY_W, DIAG_DISABLED, bold_when, cycle_option, draw_scrolled_lines,
-    draw_selector_list, head_cols, help_tooltip_lines, highlight_row, key_cell, label_style,
-    master_detail, name_color, picker_row, pill, section_box, section_box_verbatim,
+    DETAIL_KEY_GUTTER, DETAIL_KEY_W, DIAG_DISABLED, bold_when, cycle_row_lines,
+    draw_scrolled_lines, draw_selector_list, head_cols, help_tooltip_lines, highlight_row,
+    key_cell, label_style, master_detail, name_color, picker_row, pill, section_box,
+    section_box_verbatim,
 };
 use super::prose::{cmd, cmd_lit};
 
@@ -494,19 +495,29 @@ fn draw_settings_rows(
         let selected = actions_focused && i == cursor;
         let is_editing = editing == Some(*row);
         let input = row_input(draft, snap, *row);
-        let line = detail_row(*row, selected, is_editing, armed_action, snap, &input);
+        let row_lines = detail_row(
+            *row,
+            selected,
+            is_editing,
+            armed_action,
+            snap,
+            &input,
+            inner.width as usize,
+        );
         if is_editing {
             edit_caret = Some((line_idx, input, *row));
         }
         if selected || is_editing {
             focus.0 = line_idx as usize;
         }
-        lines.push(if selected {
-            highlight_row(line, inner.width as usize)
-        } else {
-            line
-        });
-        line_idx += 1;
+        for line in row_lines {
+            lines.push(if selected {
+                highlight_row(line, inner.width as usize)
+            } else {
+                line
+            });
+            line_idx += 1;
+        }
         if selected
             && !is_editing
             && let Some(text) = row_hint(*row, snap)
@@ -699,7 +710,8 @@ fn detail_row(
     armed_action: Option<ConfigRow>,
     snap: &Snap,
     input: &InputState,
-) -> Line<'static> {
+    width: usize,
+) -> Vec<Line<'static>> {
     let arrow = if editing {
         Span::styled(format!("{} ", theme::edit_glyph()), theme::accent().bold())
     } else if selected {
@@ -707,12 +719,14 @@ fn detail_row(
     } else {
         Span::raw("  ")
     };
-    match row {
+    let line = match row {
         ConfigRow::Name => kv_field(arrow, "name", input, editing, selected, false),
         ConfigRow::BaseUrl => kv_field(arrow, "base url", input, editing, selected, false),
         ConfigRow::ApiKey => kv_field(arrow, "api key", input, editing, selected, true),
         // Hybrid: the alias cycle at rest, a plain text field while typing a custom id.
-        ConfigRow::Model if !editing => model_cycle_line(arrow, &input.value, selected),
+        ConfigRow::Model if !editing => {
+            return model_cycle_lines(arrow, &input.value, selected, width);
+        }
         ConfigRow::Model => kv_field(arrow, "model", input, editing, selected, false),
         ConfigRow::OpusModel => kv_field(arrow, "opus", input, editing, selected, false),
         ConfigRow::SonnetModel => kv_field(arrow, "sonnet", input, editing, selected, false),
@@ -858,7 +872,8 @@ fn detail_row(
             };
             Line::from(vec![row_arrow, Span::styled(label, style)])
         }
-    }
+    };
+    vec![line]
 }
 
 fn kv_field(
@@ -925,14 +940,15 @@ fn value_spans(input: &InputState, editing: bool, mask_value: bool) -> Vec<Span<
     vec![Span::styled(input.value.clone(), body)]
 }
 
-/// The `model` row at rest: a segmented alias control (`default` + presets).
-/// The active option is `ACCENT` and wraps in `[]` only while the row is the
-/// cursor (the row widens by 2 on focus — the Config-tab focus cue); the rest
-/// stay bare `TEXT_FAINT`. A custom id (set via ⏎) matches no preset, so the
-/// real value is appended in `ACCENT` rather than mis-bracketing the nearest
-/// alias.
-fn model_cycle_line(arrow: Span<'static>, current: &str, selected: bool) -> Line<'static> {
-    let mut spans = vec![
+/// The `model` row at rest. A custom id (set via ⏎) matches no preset, so it
+/// trails the run rather than mis-bracketing the nearest alias.
+fn model_cycle_lines(
+    arrow: Span<'static>,
+    current: &str,
+    selected: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let lead = vec![
         arrow,
         Span::styled(
             key_cell("model", DETAIL_KEY_W, DETAIL_KEY_GUTTER),
@@ -941,16 +957,9 @@ fn model_cycle_line(arrow: Span<'static>, current: &str, selected: bool) -> Line
     ];
     let mut options: Vec<(&str, bool)> = vec![("default", current.is_empty())];
     options.extend(MODEL_PRESETS.iter().map(|p| (*p, *p == current)));
-    for (i, (label, active)) in options.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(cycle_option(label, *active, selected));
-    }
-    if !current.is_empty() && !MODEL_PRESETS.contains(&current) {
-        spans.push(Span::styled(format!("   {current}"), theme::accent()));
-    }
-    Line::from(spans)
+    let custom =
+        (!current.is_empty() && !MODEL_PRESETS.contains(&current)).then_some((current, true));
+    cycle_row_lines(lead, &options, custom, None, selected, width)
 }
 
 #[cfg(test)]

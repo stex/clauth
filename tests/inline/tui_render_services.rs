@@ -1757,6 +1757,38 @@ fn herdr_options_render_all_six_rows_on_both_tiers() {
     drop(compatible);
 }
 
+/// A narrow detail pane breaks the `popup width` cycle between options onto a
+/// line indented to the value column, never inside `split-right`.
+#[test]
+fn herdr_popup_width_row_wraps_between_options_in_a_narrow_pane() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let app = herdr_options_app(healthy_config());
+    let mut term = Terminal::new(TestBackend::new(70, 40)).unwrap();
+    term.draw(|f| super::draw(f, f.area(), &app)).unwrap();
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    let screen = rows.join("\n");
+    let at = rows
+        .iter()
+        .position(|r| r.contains("popup width"))
+        .unwrap_or_else(|| panic!("no popup width row:\n{screen}"));
+    let detail = |r: &str| -> String {
+        r.split("││")
+            .nth(1)
+            .unwrap_or_default()
+            .trim_end_matches('│')
+            .trim_end()
+            .to_string()
+    };
+    assert_eq!(
+        [detail(&rows[at]), detail(&rows[at + 1])],
+        [
+            " ❯ popup width  [fit]  half  split-right",
+            "                split-top"
+        ],
+        "{screen}"
+    );
+}
+
 /// While focus sits on the selector, the option rows render blurred: no caret,
 /// and the cycle row carries its selection by color alone (no brackets).
 #[test]
