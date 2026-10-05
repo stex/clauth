@@ -2742,6 +2742,13 @@ pub(crate) struct App {
     /// whenever a daemon control, a shunt action or a Services recompute
     /// lands ([`sync_gateway_state`]). UI-thread-only.
     pub(crate) gateway_state: GatewayState,
+    /// Whether the last [`App::set_gateway_state`] saw a gateway that would
+    /// run with no daemon to run it; its rise raises the no-daemon toast.
+    pub(crate) gateway_unrun: bool,
+    /// The worker asking whether a gateway a daemon left behind still serves
+    /// ([`crate::daemon::gateway::left_behind_gateway_runs`]), which picks the
+    /// no-daemon toast's copy.
+    pub(crate) left_behind_probe: ProbeWorker<bool>,
     /// A `start daemon` / `stop daemon` worker is running; the action menu
     /// offers neither verb until its outcome lands. UI-thread-only.
     pub(crate) daemon_control_busy: bool,
@@ -3230,6 +3237,8 @@ impl App {
             status_refresh,
             daemon_health,
             gateway_state: crate::daemon::gateway_slot(daemon_health).0.state,
+            gateway_unrun: false,
+            left_behind_probe: ProbeWorker::new(crate::daemon::gateway::left_behind_gateway_runs),
             last_daemon_probe: Instant::now(),
             daemon_control_busy: false,
             daemon_control_rx,
@@ -3951,6 +3960,21 @@ impl App {
     pub(crate) fn open_modal(&mut self, modal: Modal) {
         self.services.land_on_herdr = false;
         self.modals.push(modal);
+    }
+
+    /// Every write of [`App::gateway_state`] after construction lands here.
+    /// No daemon (never a stale one, whose supervisor still runs) under the
+    /// record-only `unobserved` slot means the gateway would run and nothing
+    /// will start it: entering that state starts the left-behind probe, whose
+    /// landing toasts once ([`drain_left_behind_probe`]).
+    pub(crate) fn set_gateway_state(&mut self, state: GatewayState) {
+        self.gateway_state = state;
+        let unrun = self.daemon_health == crate::daemon::DaemonHealth::Absent
+            && state == GatewayState::Unobserved;
+        if unrun && !self.gateway_unrun {
+            self.left_behind_probe.restart();
+        }
+        self.gateway_unrun = unrun;
     }
 
     pub(crate) fn toast(&mut self, kind: ToastKind, body: impl Into<String>) {
@@ -5688,7 +5712,7 @@ fn recompute_services_checks(app: &mut App, refresh_version: bool, shunt: ShuntR
     // and the admin need are cheap local reads on the recompute; the store
     // move plan and the codex pool read run on workers.
     let (gateway_slot, gateway_supervised) = crate::daemon::gateway_slot(app.daemon_health);
-    app.gateway_state = gateway_slot.state;
+    app.set_gateway_state(gateway_slot.state);
     if gateway_slot.state == GatewayState::Absent {
         // The readout's bind comes from the env the adopt reads, which moves
         // with the env source.
@@ -6337,7 +6361,7 @@ fn gateway_state_word(state: GatewayState) -> &'static str {
 
 /// The gateway state's dot bucket: green healthy; amber starting/unhealthy/
 /// restarting/stopping; red the refusal states; dim absent/disabled/unobserved.
-fn gateway_health(state: GatewayState) -> Health {
+pub(crate) fn gateway_health(state: GatewayState) -> Health {
     match state {
         GatewayState::Healthy => Health::Ok,
         GatewayState::Starting
@@ -9436,8 +9460,39 @@ pub(crate) fn shunt_verb(app: &App) -> Option<ShuntVerb> {
 /// Re-read the gateway slot for [`App::gateway_state`] under the daemon health
 /// the app holds now.
 pub(crate) fn sync_gateway_state(app: &mut App) {
-    app.gateway_state = crate::daemon::gateway_slot(app.daemon_health).0.state;
+    app.set_gateway_state(crate::daemon::gateway_slot(app.daemon_health).0.state);
 }
+
+/// The left-behind probe's landing: the no-daemon toast, its copy by the
+/// probe's answer, raised only while the app is still in the state that
+/// started it.
+fn drain_left_behind_probe(app: &mut App) {
+    let Some(left_running) = app.left_behind_probe.drain() else {
+        return;
+    };
+    if app.gateway_unrun {
+        let body = if left_running {
+            GATEWAY_LEFT_RUNNING
+        } else {
+            GATEWAY_UNRUN
+        };
+        app.toast(ToastKind::Warning, body);
+    }
+}
+
+/// The toast for a gateway that would run with no daemon to run it.
+const GATEWAY_UNRUN: &str = concat!(
+    "the shunt gateway will not run\nno daemon runs · ",
+    prose::key_lit!("a"),
+    " → start daemon"
+);
+
+/// The no-daemon toast's copy while a gateway the last daemon left still serves.
+const GATEWAY_LEFT_RUNNING: &str = concat!(
+    "a shunt gateway the last daemon left still runs\nno daemon supervises it · ",
+    prose::key_lit!("a"),
+    " → start daemon"
+);
 
 /// Push what the account under the cursor can be told to do, returning the name
 /// the menu titles that group with. Nothing to push when the cursor sits past
@@ -13365,6 +13420,7 @@ pub(crate) fn on_tick(app: &mut App) {
     poll_services_refresh(app);
     drain_daemon_control(app);
     poll_daemon_health(app);
+    drain_left_behind_probe(app);
 
     warn_day_claim_notices(app);
     update_banner(app);

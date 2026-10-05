@@ -1107,7 +1107,7 @@ fn age_phrase(secs: u64) -> String {
     }
 }
 
-fn health_color(health: Health) -> ratatui::style::Color {
+pub(super) fn health_color(health: Health) -> ratatui::style::Color {
     match health {
         Health::Ok => theme::success_color(),
         Health::Warn => theme::warning_color(),

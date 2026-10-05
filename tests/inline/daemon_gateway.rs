@@ -3221,3 +3221,36 @@ fn disabled_wins_over_a_hold_naming_this_daemon() {
     };
     assert_eq!(slot.state, GatewayState::Disabled, "{slot:?}");
 }
+
+/// A left-behind gateway serves only while the marker's pid is a live process
+/// started when the marker says and no stop was asked of it: no marker, a
+/// recycled pid (another start time) and a stopping child all read as none.
+#[test]
+fn a_left_behind_gateway_runs_only_while_live_and_unstopped() {
+    let _home = HomeSandbox::new();
+    assert!(!left_behind_gateway_runs(), "no marker");
+
+    let pid = std::process::id();
+    let start = process_start_time(pid).expect("this process has a start time");
+    let marker = |start: String, stop_deadline_ms: Option<u64>| ChildMarker {
+        pid,
+        start: Some(start),
+        stop_bound_secs: 40,
+        stop_deadline_ms,
+    };
+
+    write_marker(&marker(start.clone(), None)).expect("marker");
+    assert!(left_behind_gateway_runs(), "a live, unstopped child serves");
+
+    write_marker(&marker(start.clone(), Some(1))).expect("marker");
+    assert!(
+        !left_behind_gateway_runs(),
+        "a child asked to stop is on its way out"
+    );
+
+    write_marker(&marker(format!("{start}-not"), None)).expect("marker");
+    assert!(
+        !left_behind_gateway_runs(),
+        "a pid with another start time is not the child"
+    );
+}

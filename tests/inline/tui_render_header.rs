@@ -709,12 +709,12 @@ fn the_daemon_chip_is_always_present_and_maps_health_to_color() {
     use crate::daemon::DaemonHealth;
     let mut app = app_with(vec![oauth_profile("uwuclxdy", 42.0)], Some("uwuclxdy"));
 
-    // Absent → the chip still renders, dim, on the right edge.
+    // Absent → the chip still renders, faint, on the right edge.
     app.daemon_health = DaemonHealth::Absent;
     assert_eq!(
         super::daemon_chip_color(&app),
-        super::theme::text_dim_color(),
-        "absent → dim"
+        super::theme::text_faint_color(),
+        "absent → TEXT_FAINT, the service-chip contract's absent tone"
     );
     let row0 = row_content(&app, 100, 0);
     assert!(
@@ -740,7 +740,7 @@ fn the_daemon_chip_is_always_present_and_maps_health_to_color() {
 }
 
 /// The chip's pill grammar on the buffer: `[ ` and ` ]` are TEXT_DIM chrome,
-/// the word between them bold in the health color (dim when absent) — pinned on
+/// the word between them bold in the health color (faint when absent) — pinned on
 /// cells, so a chip painted in one flat style reds.
 #[test]
 fn the_daemon_chip_cells_carry_the_pill_grammar() {
@@ -752,7 +752,7 @@ fn the_daemon_chip_cells_carry_the_pill_grammar() {
     let word_w = "daemon".chars().count();
 
     for (health, expected) in [
-        (DaemonHealth::Absent, super::theme::text_dim_color()),
+        (DaemonHealth::Absent, super::theme::text_faint_color()),
         (DaemonHealth::Fresh, super::theme::success_color()),
         (DaemonHealth::Stale, super::theme::warning_color()),
     ] {
@@ -794,6 +794,113 @@ fn the_daemon_chip_cells_carry_the_pill_grammar() {
             assert!(
                 buf.content[cell].modifier.contains(Modifier::BOLD),
                 "{health:?}: the word is bold at cell {cell}"
+            );
+        }
+    }
+}
+
+// ── `[ shunt ]` header chip (always present; gateway state → color) ──────────
+
+/// Every gateway state, once each.
+const GATEWAY_STATES: [crate::daemon::gateway::GatewayState; 15] = {
+    use crate::daemon::gateway::GatewayState as S;
+    [
+        S::Absent,
+        S::Disabled,
+        S::Held,
+        S::NoConfig,
+        S::YamlRefused,
+        S::Misconfigured,
+        S::BinaryMissing,
+        S::Foreign,
+        S::Starting,
+        S::Healthy,
+        S::Unhealthy,
+        S::BelowFloor,
+        S::Restarting,
+        S::Stopping,
+        S::Unobserved,
+    ]
+};
+
+/// The chip's color per state, spelled from the design record: green serving,
+/// amber starting, unhealthy or between runs, red refused (the gateway will not
+/// run until its setup is fixed), faint when nothing should run. The match is
+/// exhaustive, so a new state fails to compile here rather than inheriting a
+/// color.
+fn expected_shunt_color(state: crate::daemon::gateway::GatewayState) -> ratatui::style::Color {
+    use crate::daemon::gateway::GatewayState as S;
+    match state {
+        S::Healthy => super::theme::success_color(),
+        S::Starting | S::Unhealthy | S::Restarting | S::Stopping => super::theme::warning_color(),
+        S::NoConfig
+        | S::YamlRefused
+        | S::Misconfigured
+        | S::BinaryMissing
+        | S::Foreign
+        | S::BelowFloor => super::theme::danger_color(),
+        S::Absent | S::Disabled | S::Held | S::Unobserved => super::theme::text_faint_color(),
+    }
+}
+
+/// `[ shunt ]` renders for every state, the gateway absent included, with the
+/// pill grammar on its cells: `[ ` and ` ]` TEXT_DIM and unbolded, the word bold
+/// in the state's color.
+#[test]
+fn the_shunt_chip_is_always_present_and_maps_every_state_to_its_color() {
+    use ratatui::style::Modifier;
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let mut app = app_with(vec![oauth_profile("uwuclxdy", 42.0)], Some("uwuclxdy"));
+    app.daemon_health = crate::daemon::DaemonHealth::Fresh;
+    let word_w = "shunt".chars().count();
+    for (i, a) in GATEWAY_STATES.iter().enumerate() {
+        assert!(
+            !GATEWAY_STATES[i + 1..].contains(a),
+            "{a:?} is listed twice"
+        );
+    }
+
+    for state in GATEWAY_STATES {
+        app.gateway_state = state;
+        let expected = expected_shunt_color(state);
+        let width = 100;
+        let mut term = Terminal::new(TestBackend::new(width, header_height(&app))).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            super::draw(f, area, &app);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let row = crate::testutil::buffer_rows(buf)[0]
+            .chars()
+            .skip(10)
+            .collect::<String>();
+        assert!(
+            row.trim_end().ends_with("[ shunt ]  [ daemon ]"),
+            "{state:?}: the shunt chip sits two cells left of the daemon chip: {row:?}"
+        );
+        let chip = 10 + row.find("[ shunt ]").expect("chip renders");
+        for cell in [chip, chip + 1, chip + word_w + 2, chip + word_w + 3] {
+            assert_eq!(
+                buf.content[cell].fg,
+                super::theme::text_dim_color(),
+                "{state:?}: the bracket at cell {cell} is TEXT_DIM chrome"
+            );
+            assert!(
+                !buf.content[cell].modifier.contains(Modifier::BOLD),
+                "{state:?}: the bracket at cell {cell} is not bold"
+            );
+        }
+        for i in 0..word_w {
+            let cell = chip + 2 + i;
+            assert_eq!(
+                buf.content[cell].fg, expected,
+                "{state:?}: the word carries the state's color at cell {cell}"
+            );
+            assert!(
+                buf.content[cell].modifier.contains(Modifier::BOLD),
+                "{state:?}: the word is bold at cell {cell}"
             );
         }
     }

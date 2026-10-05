@@ -1403,12 +1403,9 @@ pub(crate) fn stop_left_behind(path: &Path, name: &str, now_ms: u64) -> Option<L
             return None;
         }
     };
-    let start = match marker.start.clone() {
-        Some(start) if process_start_time(marker.pid).as_ref() == Some(&start) => start,
-        _ => {
-            remove_marker_at(path);
-            return None;
-        }
+    let Some(start) = live_start(&marker) else {
+        remove_marker_at(path);
+        return None;
     };
     let deadline_ms = match marker.stop_deadline_ms {
         // A stop already asked for: a second SIGTERM makes the child skip its
@@ -1448,6 +1445,27 @@ pub(crate) fn stop_left_behind_gateway() {
     if let Ok(path) = gateway_marker_path() {
         let _ = stop_left_behind(&path, "the shunt gateway", now_ms());
     }
+}
+
+/// Whether a gateway child a daemon left behind still serves: live, and no
+/// stop asked of it (a stopping child is on its way out). The TUI's no-daemon
+/// warning tells a gateway nothing will start from one still serving
+/// unsupervised. Reads the marker only; never signals, rewrites or removes it,
+/// and an unreadable marker reads as no child. Spawns a process on macOS and
+/// Windows ([`process_start_time`]), so the TUI runs it on a worker.
+pub(crate) fn left_behind_gateway_runs() -> bool {
+    gateway_marker_path()
+        .ok()
+        .and_then(|path| read_marker_at(&path).ok().flatten())
+        .is_some_and(|marker| marker.stop_deadline_ms.is_none() && live_start(&marker).is_some())
+}
+
+/// The marker's start time when its pid is a live process started then, the
+/// only proof the pid is still the child a daemon spawned and not a recycled
+/// one.
+fn live_start(marker: &ChildMarker) -> Option<String> {
+    let start = marker.start.clone()?;
+    (process_start_time(marker.pid).as_ref() == Some(&start)).then_some(start)
 }
 
 /// The gateway's child marker path.
@@ -2068,7 +2086,7 @@ pub(crate) struct ChildMarker {
     pub(crate) stop_deadline_ms: Option<u64>,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn write_marker(marker: &ChildMarker) -> Result<()> {
     let path = gateway_marker_path()?;
     write_marker_at(&path, marker)

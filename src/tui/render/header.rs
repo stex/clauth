@@ -3,12 +3,13 @@
 //! `render::draw`'s layout in step.
 //!
 //! Row 0 reads `clauth vX.Y.Z` on the left with the herdr tag between them,
-//! and the `[ daemon ]` health chip on the right edge; it sheds the tag first,
-//! then the chip. Row 1 carries the fleet's live-session count, the
-//! active-profile usage gauge and the status indicator, nothing else: the
-//! account counts and the harness filter live on the accounts panel's title
-//! row, as meta slots beside the bare `ACCOUNTS` title. Row 1 sheds the live
-//! count first; the gauge's ladder drops the usage bar before the name.
+//! and the `[ shunt ]  [ daemon ]` service chips on the right edge; it sheds
+//! the tag first, then the shunt chip, then the daemon chip. Row 1 carries
+//! the fleet's live-session count, the active-profile usage gauge and the
+//! status indicator, nothing else: the account counts and the harness filter
+//! live on the accounts panel's title row, as meta slots beside the bare
+//! `ACCOUNTS` title. Row 1 sheds the live count first; the gauge's ladder
+//! drops the usage bar before the name.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -16,9 +17,10 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::super::app::{App, Tab, live_count_text};
+use super::super::app::{App, Health, Tab, gateway_health, live_count_text};
 use super::super::theme;
 use super::format::{bar_string_with_cells, fixed_split};
+use super::services::health_color;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -212,7 +214,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
         active_gauge(app)
     };
 
-    // ── Row 0: clauth [herdr tag] vX.Y.Z ....... [ daemon ] ───────────────
+    // ── Row 0: clauth [herdr tag] vX.Y.Z ....... [ shunt ]  [ daemon ] ─────
     let brand = "clauth";
     let ver = format!(" v{VERSION}");
     let mut row0: Vec<Span<'static>> = vec![
@@ -220,35 +222,39 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Span::styled(ver, theme::dim()),
     ];
     let mut used: usize = row0.iter().map(|s| s.content.chars().count()).sum();
-    // `[ daemon ]` health chip, stuck to the right edge. Always present: no
-    // daemon dims it rather than hiding it. It is the second span this row
-    // sheds, and only once brand + version + chip no longer fit with the
-    // content gap the chip keeps from what sits to its left.
-    const CHIP_OPEN: &str = "[ ";
-    const CHIP_WORD: &str = "daemon";
-    const CHIP_CLOSE: &str = " ]";
-    let chip_w = CHIP_OPEN.chars().count() + CHIP_WORD.chars().count() + CHIP_CLOSE.chars().count();
+    // Service chips, stuck to the right edge in a fixed order two cells apart.
+    // Always present: an absent service dims its chip rather than hiding it.
+    // They shed after the tag, the shunt chip before the daemon chip, each only
+    // once brand + version + the chips left no longer fit with the content gap
+    // the chips keep from what sits to their left.
+    let shunt = service_chip("shunt", shunt_chip_color(app));
+    let daemon = service_chip("daemon", daemon_chip_color(app));
+    let daemon_w = spans_width(&daemon);
+    let chips_w = spans_width(&shunt) + CHIP_GAP.len() + daemon_w;
     // `[ herdr ]` context tag, between the brand and the version. It is the
     // first span this row sheds, so it renders only while it still leaves room
-    // for the chip — brand and version never clip.
+    // for both chips — brand and version never clip.
     if app.herdr_mode {
         let tag = "  [ herdr ]";
-        if used + tag.chars().count() + chip_w + CONTENT_GAP <= info_width {
+        if used + tag.chars().count() + chips_w + CONTENT_GAP <= info_width {
             row0.insert(1, Span::styled(tag, theme::dim()));
             used += tag.chars().count();
         }
     }
-    if used + chip_w + CONTENT_GAP <= info_width {
-        let gap = info_width - used - chip_w;
+    let chips: Vec<Span<'static>> = if used + chips_w + CONTENT_GAP <= info_width {
+        let mut both = Vec::from(shunt);
+        both.push(Span::raw(CHIP_GAP));
+        both.extend(daemon);
+        both
+    } else if used + daemon_w + CONTENT_GAP <= info_width {
+        Vec::from(daemon)
+    } else {
+        Vec::new()
+    };
+    if !chips.is_empty() {
+        let gap = info_width - used - spans_width(&chips);
         row0.push(Span::raw(" ".repeat(gap)));
-        // Pill grammar: the brackets are chrome, the word carries the health
-        // color in bold.
-        row0.push(Span::styled(CHIP_OPEN, theme::dim()));
-        row0.push(Span::styled(
-            CHIP_WORD,
-            theme::label().fg(daemon_chip_color(app)),
-        ));
-        row0.push(Span::styled(CHIP_CLOSE, theme::dim()));
+        row0.extend(chips);
     }
     frame.render_widget(
         Paragraph::new(Line::from(row0)).style(theme::base()),
@@ -349,16 +355,45 @@ fn status_dot_color(app: &App) -> ratatui::style::Color {
     }
 }
 
+/// The cells between two service chips.
+const CHIP_GAP: &str = "  ";
+
+/// A service chip in the pill grammar: the brackets are chrome, the word
+/// carries the health color in bold.
+fn service_chip(word: &'static str, color: ratatui::style::Color) -> [Span<'static>; 3] {
+    [
+        Span::styled("[ ", theme::dim()),
+        Span::styled(word, theme::label().fg(color)),
+        Span::styled(" ]", theme::dim()),
+    ]
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
 /// `[ daemon ]` header-chip color. Mirrors [`status_dot_color`]: green = daemon
 /// up + fresh feed, amber = up but its `status.json` is stale (wedging /
-/// pre-abort / just booted), dim = no daemon at all (the chip is always on the
-/// row; the TUI self-fetches under its own lease).
+/// pre-abort / just booted), faint = no daemon at all (the chip is always on
+/// the row; the TUI self-fetches under its own lease).
 fn daemon_chip_color(app: &App) -> ratatui::style::Color {
     use crate::daemon::DaemonHealth;
     match app.daemon_health {
-        DaemonHealth::Absent => theme::text_dim_color(),
+        DaemonHealth::Absent => theme::text_faint_color(),
         DaemonHealth::Stale => theme::warning_color(),
         DaemonHealth::Fresh => theme::success_color(),
+    }
+}
+
+/// `[ shunt ]` header-chip color: the Services row's state buckets, so the
+/// chip and the row's dot never disagree — green serving, amber starting,
+/// unhealthy or between runs, red refused — except that an idle gateway
+/// (absent, disabled, held, or unobserved: no supervisor reads it) is faint
+/// like an absent daemon rather than the row's dim.
+fn shunt_chip_color(app: &App) -> ratatui::style::Color {
+    match gateway_health(app.gateway_state) {
+        Health::Idle => theme::text_faint_color(),
+        health => health_color(health),
     }
 }
 

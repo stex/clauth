@@ -61,7 +61,7 @@ const _: () = assert!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DaemonHealth {
     /// No daemon: `clauthd.lock` is free (never started, or the holder died).
-    /// The chip is dim; the TUI self-fetches under its own lease.
+    /// The chip is faint; the TUI self-fetches under its own lease.
     Absent,
     /// A daemon holds the lock but its feed is stale/unwritten — wedging,
     /// pre-abort, or just-booted before the first `status.json` write. Amber.

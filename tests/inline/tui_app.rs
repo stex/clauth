@@ -5616,6 +5616,201 @@ fn the_cached_gateway_state_follows_every_sync_site() {
     );
 }
 
+/// The no-daemon warning's toast, copy spelled out with the `a` key's marker.
+const GATEWAY_UNRUN_TOAST: &str =
+    "the shunt gateway will not run\nno daemon runs · \u{E000}a\u{E002} → start daemon";
+
+/// The same warning's copy while a gateway the last daemon left still serves.
+const GATEWAY_LEFT_RUNNING_TOAST: &str = "a shunt gateway the last daemon left still runs\nno daemon supervises it · \u{E000}a\u{E002} → start daemon";
+
+fn gateway_unrun_toasts(app: &App) -> Vec<super::ToastKind> {
+    app.toasts
+        .iter()
+        .filter(|t| t.body == GATEWAY_UNRUN_TOAST)
+        .map(|t| t.kind)
+        .collect()
+}
+
+/// Stub the left-behind probe (`None` under test) with a fixed answer.
+fn stub_left_behind(app: &mut App, left_running: bool) {
+    app.left_behind_probe.prober = Some(if left_running { || true } else { || false });
+}
+
+/// Drain the left-behind probe until its run lands.
+fn await_left_behind(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while app.left_behind_probe.running {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the left-behind probe did not land within 10 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        super::drain_left_behind_probe(app);
+    }
+}
+
+/// The throttled daemon poll, forced due, then the probe it may start.
+fn poll_and_land(app: &mut App) {
+    app.last_daemon_probe = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    super::poll_daemon_health(app);
+    await_left_behind(app);
+}
+
+fn set_gateway_disabled(disabled: bool) {
+    crate::gateway::GatewayRecord::update(|slot| {
+        if let Some(record) = slot.as_mut() {
+            record.disabled = disabled;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A gateway adopted and enabled with no daemon to run it toasts once, amber,
+/// on entering that state: a re-probe in the same state stays quiet, and
+/// leaving it (the record disabled) then entering it again toasts again.
+#[test]
+fn a_gateway_with_no_daemon_to_run_it_toasts_once_per_entry() {
+    use crate::daemon::gateway::GatewayState as S;
+    let home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_adopted_record(&home, false, "[server]\n");
+    let mut app = bare_app();
+    stub_left_behind(&mut app, false);
+
+    poll_and_land(&mut app);
+    assert_eq!(app.daemon_health, crate::daemon::DaemonHealth::Absent);
+    assert_eq!(
+        app.gateway_state,
+        S::Unobserved,
+        "adopted, enabled, no daemon"
+    );
+    assert_eq!(
+        gateway_unrun_toasts(&app),
+        vec![super::ToastKind::Warning],
+        "entering the state toasts once, amber"
+    );
+
+    poll_and_land(&mut app);
+    assert_eq!(
+        gateway_unrun_toasts(&app).len(),
+        1,
+        "a re-probe in the same state stays quiet"
+    );
+
+    set_gateway_disabled(true);
+    poll_and_land(&mut app);
+    assert_eq!(app.gateway_state, S::Disabled);
+    assert_eq!(
+        gateway_unrun_toasts(&app).len(),
+        1,
+        "a disabled gateway is not warned about"
+    );
+
+    set_gateway_disabled(false);
+    poll_and_land(&mut app);
+    assert_eq!(
+        gateway_unrun_toasts(&app).len(),
+        2,
+        "entering the state again toasts again"
+    );
+}
+
+/// A daemon that holds the singleton but publishes a stale feed still runs its
+/// gateway's supervisor, so the record-only `unobserved` read under it is not
+/// the no-daemon state and raises no warning; that daemon then dying is.
+#[test]
+fn a_stale_daemon_raises_no_gateway_warning() {
+    use crate::daemon::gateway::GatewayState as S;
+    let home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_adopted_record(&home, false, "[server]\n");
+    let mut app = bare_app();
+    stub_left_behind(&mut app, false);
+    app.toasts.clear();
+    app.daemon_health = crate::daemon::DaemonHealth::Stale;
+    super::sync_gateway_state(&mut app);
+    await_left_behind(&mut app);
+    assert_eq!(app.gateway_state, S::Unobserved);
+    assert!(
+        gateway_unrun_toasts(&app).is_empty(),
+        "a stale daemon raised {} warning(s)",
+        gateway_unrun_toasts(&app).len()
+    );
+
+    app.daemon_health = crate::daemon::DaemonHealth::Absent;
+    super::sync_gateway_state(&mut app);
+    await_left_behind(&mut app);
+    assert_eq!(
+        gateway_unrun_toasts(&app),
+        vec![super::ToastKind::Warning],
+        "a stale daemon going away enters the no-daemon state"
+    );
+}
+
+/// The probe's answer picks the copy: a gateway the last daemon left still
+/// serving swaps it, none keeps the plain one.
+#[test]
+fn the_no_daemon_warning_says_a_left_behind_gateway_still_runs() {
+    let home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_adopted_record(&home, false, "[server]\n");
+    for (left_running, expected) in [
+        (true, GATEWAY_LEFT_RUNNING_TOAST),
+        (false, GATEWAY_UNRUN_TOAST),
+    ] {
+        let mut app = bare_app();
+        stub_left_behind(&mut app, left_running);
+        app.toasts.clear();
+        poll_and_land(&mut app);
+        let bodies: Vec<&str> = app.toasts.iter().map(|t| t.body.as_str()).collect();
+        assert_eq!(bodies, vec![expected], "left_running = {left_running}");
+    }
+}
+
+/// Production turns the probe's landing into the toast on the tick path:
+/// ticking alone, with no direct drain, lands the no-daemon warning once.
+#[test]
+fn the_tick_lands_the_no_daemon_warning() {
+    let home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_adopted_record(&home, false, "[server]\n");
+    let mut app = bare_app();
+    stub_left_behind(&mut app, false);
+    app.toasts.clear();
+    app.last_daemon_probe = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while gateway_unrun_toasts(&app).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "ticking never landed the no-daemon warning"
+        );
+        super::on_tick(&mut app);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(gateway_unrun_toasts(&app), vec![super::ToastKind::Warning]);
+}
+
+/// A probe landing after the app left the state it started in raises nothing:
+/// the warning is about a state that no longer holds.
+#[test]
+fn a_left_behind_probe_landing_after_the_state_left_raises_nothing() {
+    let home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_adopted_record(&home, false, "[server]\n");
+    let mut app = bare_app();
+    stub_left_behind(&mut app, false);
+    app.toasts.clear();
+    app.last_daemon_probe = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    super::poll_daemon_health(&mut app);
+    assert!(app.left_behind_probe.running, "the entry started the probe");
+
+    set_gateway_disabled(true);
+    super::sync_gateway_state(&mut app);
+    assert!(!app.gateway_unrun, "the record disabled leaves the state");
+    await_left_behind(&mut app);
+    assert!(
+        app.toasts.is_empty(),
+        "no toast for a state already left: {:?}",
+        app.toasts.iter().map(|t| &t.body).collect::<Vec<_>>()
+    );
+}
+
 /// The hold's success and failure toasts, kind and body.
 #[test]
 fn the_shunt_hold_toasts_follow_the_outcome() {
