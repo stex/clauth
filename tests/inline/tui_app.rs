@@ -5787,6 +5787,58 @@ fn the_tick_lands_the_no_daemon_warning() {
     assert_eq!(gateway_unrun_toasts(&app), vec![super::ToastKind::Warning]);
 }
 
+/// Toast lifetimes per the cloudy-tui contract: a red toast lingers 6 s, every
+/// other kind 5 s, each pinned on both sides of its edge.
+#[test]
+fn toasts_live_five_seconds_and_red_ones_six() {
+    use super::ToastKind as K;
+    use std::time::{Duration, Instant};
+    let _home = crate::testutil::HomeSandbox::new();
+    for (kind, ttl_ms) in [
+        (K::Info, 5_000),
+        (K::Success, 5_000),
+        (K::Warning, 5_000),
+        (K::Danger, 6_000),
+    ] {
+        for (age_ms, kept) in [(ttl_ms - 100, true), (ttl_ms, false)] {
+            let mut app = bare_app();
+            app.toasts.clear();
+            app.toast(kind, "a toast");
+            app.toasts.back_mut().expect("the toast").born =
+                Instant::now() - Duration::from_millis(age_ms);
+            app.prune_toasts();
+            assert_eq!(
+                app.toasts.len(),
+                usize::from(kept),
+                "{kind:?} at {age_ms} ms: kept = {kept}"
+            );
+        }
+    }
+}
+
+/// Each toast expires on its own clock: a live red toast at the front of the
+/// stack never holds an expired one behind it on screen.
+#[test]
+fn an_expired_toast_behind_a_live_red_one_still_expires() {
+    use super::ToastKind as K;
+    use std::time::{Duration, Instant};
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = bare_app();
+    app.toasts.clear();
+    for (kind, age_ms) in [(K::Danger, 5_500), (K::Info, 5_200), (K::Warning, 1_000)] {
+        app.toast(kind, format!("{kind:?}"));
+        app.toasts.back_mut().expect("the toast").born =
+            Instant::now() - Duration::from_millis(age_ms);
+    }
+    app.prune_toasts();
+    let kinds: Vec<K> = app.toasts.iter().map(|t| t.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![K::Danger, K::Warning],
+        "the 5.2 s info toast goes, the 5.5 s red and 1 s warning ones stay, in order"
+    );
+}
+
 /// A probe landing after the app left the state it started in raises nothing:
 /// the warning is about a state that no longer holds.
 #[test]

@@ -1345,7 +1345,7 @@ const ROTATE_LIVE_SESSION_TOAST: &str = "macos keeps its login where clauth can'
 const DISABLE_DETAIL: &str =
     "it drops out of auto-switch, usage polling, and status until re-enabled.";
 const TOAST_CAPACITY: usize = 3;
-const TOAST_TTL_NORMAL: Duration = Duration::from_secs(3);
+const TOAST_TTL_NORMAL: Duration = Duration::from_secs(5);
 const TOAST_TTL_DANGER: Duration = Duration::from_secs(6);
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -3998,18 +3998,14 @@ impl App {
     }
 
     pub(crate) fn prune_toasts(&mut self) {
-        while let Some(front) = self.toasts.front() {
-            let ttl = if front.kind == ToastKind::Danger {
+        self.toasts.retain(|toast| {
+            let ttl = if toast.kind == ToastKind::Danger {
                 TOAST_TTL_DANGER
             } else {
                 TOAST_TTL_NORMAL
             };
-            if front.born.elapsed() >= ttl {
-                self.toasts.pop_front();
-            } else {
-                break;
-            }
-        }
+            toast.born.elapsed() < ttl
+        });
     }
 
     /// Called each frame with the current terminal height. Tracks compact
