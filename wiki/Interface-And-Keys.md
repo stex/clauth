@@ -26,7 +26,7 @@ Codex accounts ([Codex](Codex)) sit under the Claude Code rows in a section head
 | Key | Action |
 |-----|--------|
 | <kbd>←</kbd> <kbd>→</kbd> (or <kbd>tab</kbd> / <kbd>⇧tab</kbd>) | previous / next tab |
-| <kbd>↑</kbd> <kbd>↓</kbd> | move the selection, or scroll a detail pane |
+| <kbd>↑</kbd> <kbd>↓</kbd> | move the selection through long lists without snapping it to an edge, or scroll a detail pane |
 | <kbd>⏎</kbd> | act on the selected row (see below) |
 | <kbd>n</kbd> | new account · on the usage tab: edit the account's note |
 | <kbd>d</kbd> | open the divergence resolver, when one is pending |
