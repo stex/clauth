@@ -356,6 +356,17 @@ fn format_pct_shows_fractional_percent() {
     assert_eq!(format_pct(42.3), "42.3%");
 }
 
+#[test]
+fn format_pct_rounds_to_two_decimals_without_trailing_zeros() {
+    assert_eq!(format_pct(1.0000000000000009), "1%");
+    assert_eq!(format_pct(1.001), "1%");
+    assert_eq!(format_pct(1.234), "1.23%");
+    assert_eq!(format_pct(1.236), "1.24%");
+    assert_eq!(format_pct(0.001), "0%");
+    assert_eq!(format_pct(-0.0), "0%");
+    assert_eq!(format_pct(99.999), "100%");
+}
+
 /// The one threshold spelling, pinned per branch so a drift on one branch
 /// cannot ride the others green: exact millions as `{n}M`, whole thousands
 /// below a million as `{n}k`, anything else plain.

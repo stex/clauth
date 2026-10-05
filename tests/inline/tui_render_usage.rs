@@ -1,5 +1,26 @@
 use super::*;
 
+#[test]
+fn usage_stat_prints_a_rounded_percentage_without_changing_its_measurement() {
+    let stat = Stat {
+        label: "5h".to_string(),
+        pct: 1.0000000000000009,
+        amount: String::new(),
+        color: theme::body(),
+        burn_rate: None,
+        rate_unit: "h",
+        pace_pct: None,
+        reset_secs: None,
+        trailing: String::new(),
+    };
+    let lines = stat.render(6, 20, 0, 0);
+    assert_eq!(
+        lines[0].spans.last().map(|s| s.content.as_ref()),
+        Some("1%")
+    );
+    assert_eq!(stat.pct, 1.0000000000000009);
+}
+
 /// `bar_spans` overlays the `│` pace marker at its cell without ever changing
 /// the bar's total width, whether the marker lands over the filled run (ahead of
 /// pace) or the empty run (under pace). An out-of-range column draws no marker.
