@@ -1870,6 +1870,56 @@ fn herdr_tag_refresh_editor_renders_the_edit_state() {
     );
 }
 
+#[test]
+fn herdr_form_keeps_its_selected_row_in_view_across_adjacent_moves_and_resize() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = herdr_options_app(healthy_config());
+    app.tab = crate::tui::app::Tab::Services;
+    app.services.herdr_options_cursor = 5;
+    let mut term = Terminal::new(TestBackend::new(80, 14)).unwrap();
+    term.draw(|f| super::super::draw(f, &app)).unwrap();
+    let bottom = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        bottom.iter().any(|r| r.contains("delegate row text")),
+        "last option is visible"
+    );
+    let prior = app.services.form_offset.get();
+    assert!(prior > 0, "herdr form has scrolled past its intro");
+    app.services.herdr_options_cursor = 4;
+    term.draw(|f| super::super::draw(f, &app)).unwrap();
+    let adjacent = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        adjacent.iter().any(|r| r.contains("delegate dot")),
+        "adjacent option is visible"
+    );
+    assert!(
+        adjacent.iter().any(|r| r.contains("delegate row text")),
+        "context below remains visible"
+    );
+    assert_eq!(
+        app.services.form_offset.get(),
+        prior,
+        "adjacent move keeps the viewport"
+    );
+    let before_row = bottom
+        .iter()
+        .position(|r| r.contains("delegate row text"))
+        .unwrap();
+    let after_row = adjacent
+        .iter()
+        .position(|r| r.contains("delegate row text"))
+        .unwrap();
+    assert_eq!(after_row, before_row, "last option stays at its screen row");
+    term.backend_mut().resize(80, 45);
+    term.autoresize().unwrap();
+    term.draw(|f| super::super::draw(f, &app)).unwrap();
+    assert_eq!(
+        app.services.form_offset.get(),
+        0,
+        "fitting herdr form resets the offset"
+    );
+}
+
 // ── shunt card render ────────────────────────────────────────────────────────
 
 fn shunt_record(

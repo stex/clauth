@@ -20,7 +20,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, ListItem, Paragraph};
 
 use super::super::app::{
     App, Check, HERDR_OPTIONS, Health, HerdrOption, InputState, OUTDATED_PLUGIN_MARK, ServiceFix,
@@ -29,9 +29,9 @@ use super::super::app::{
 use super::super::theme;
 use super::format::{middle_truncate, spinner_frame};
 use super::panes::{
-    cycle_row_lines, draw_scrollbar, draw_scrolled_lines, empty_state, head_cols,
-    help_tooltip_lines, highlight_row, invalid_tooltip_lines, key_cell, label_style, master_detail,
-    section_box, value_caret, wrap_words,
+    cycle_row_lines, draw_following_list, draw_scrollbar, draw_scrolled_lines, empty_state,
+    head_cols, help_tooltip_lines, highlight_row, invalid_tooltip_lines, key_cell, label_style,
+    master_detail, section_box, value_caret, wrap_words,
 };
 use super::prose;
 use crate::format::truncate;
@@ -54,6 +54,7 @@ fn draw_selector(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     if app.services.row_count() == 0 {
+        app.services.selector_offset.set(0);
         let widget = if app.services.error.is_some() {
             empty_state("check failed", "r", "to retry")
         } else {
@@ -64,42 +65,28 @@ fn draw_selector(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 
     let content_w = inner.width as usize;
-    let mut rows: Vec<Line<'static>> = Vec::new();
-    let mut cursor_line = 0usize;
-
-    for (idx, check) in app.services.checks.iter().enumerate() {
-        if idx == app.services.cursor {
-            cursor_line = rows.len();
-        }
-        rows.push(selector_row(
-            check.health,
-            check.label,
-            idx == app.services.cursor,
-            focused,
-            content_w,
-        ));
-    }
-
-    let viewport = inner.height as usize;
-    let start = window_start(cursor_line, viewport, rows.len());
-    let shown = rows.len().saturating_sub(start).min(viewport.max(1));
-    let window: Vec<Line<'static>> = rows.iter().skip(start).take(shown).cloned().collect();
-
-    frame.render_widget(Paragraph::new(window).style(theme::base()), inner);
-    draw_scrollbar(frame, inner, rows.len(), start, viewport);
-}
-
-/// Keep `focus` near the center of a `viewport`-tall window over `total` rows.
-fn window_start(focus: usize, viewport: usize, total: usize) -> usize {
-    if total <= viewport || viewport == 0 {
-        return 0;
-    }
-    let half = viewport / 2;
-    if focus < half {
-        0
-    } else {
-        focus.saturating_sub(half).min(total - viewport)
-    }
+    let rows: Vec<ListItem<'static>> = app
+        .services
+        .checks
+        .iter()
+        .enumerate()
+        .map(|(idx, check)| {
+            ListItem::new(selector_row(
+                check.health,
+                check.label,
+                idx == app.services.cursor,
+                focused,
+                content_w,
+            ))
+        })
+        .collect();
+    draw_following_list(
+        frame,
+        inner,
+        rows,
+        app.services.cursor,
+        &app.services.selector_offset,
+    );
 }
 
 /// One selector row: `❯ ● label`. Rows are dot-only — the dot color carries the
@@ -280,7 +267,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         && let Some(problem) = check.problems.get(app.services.problem_cursor)
     {
         let line = problem.line;
-        draw_scrolled_lines(frame, inner, lines, (line, line + 1));
+        draw_scrolled_lines(frame, inner, lines, (line, line + 1), None);
         return;
     }
 
@@ -677,7 +664,7 @@ fn draw_herdr_detail(frame: &mut Frame<'_>, inner: Rect, app: &App, mut lines: V
         }
     }
 
-    let offset = draw_scrolled_lines(frame, inner, lines, focus);
+    let offset = draw_scrolled_lines(frame, inner, lines, focus, Some(&app.services.form_offset));
     // A caret scrolled off the top has no cell to sit in; leaving the cursor
     // unset is better than parking it on an unrelated row.
     if let Some((cx, row)) = caret

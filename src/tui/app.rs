@@ -1589,6 +1589,7 @@ pub(crate) struct StatusState {
     /// Selected incident index in `incidents`.
     pub(crate) cursor: usize,
     pub(crate) focus: StatusFocus,
+    pub(crate) selector_offset: std::cell::Cell<usize>,
     /// Scroll offset (lines) into the detail timeline.
     pub(crate) detail_scroll: u16,
     /// Max valid `detail_scroll` from the last detail render (`total - viewport`).
@@ -1611,6 +1612,7 @@ impl Default for StatusState {
             fetching: false,
             cursor: 0,
             focus: StatusFocus::List,
+            selector_offset: std::cell::Cell::new(0),
             detail_scroll: 0,
             detail_max_scroll: std::cell::Cell::new(0),
             seen_latest: None,
@@ -2080,6 +2082,8 @@ pub(crate) struct ServicesState {
     pub(crate) focus: ServicesFocus,
     /// Cursor over the service rows (`0..checks.len()`).
     pub(crate) cursor: usize,
+    pub(crate) selector_offset: std::cell::Cell<usize>,
+    pub(crate) form_offset: std::cell::Cell<usize>,
     pub(crate) detail_scroll: u16,
     /// Max valid `detail_scroll` from the last render (`&App` interior mutability,
     /// clamped by the key handler — same pattern as `StatusState`).
@@ -2207,6 +2211,8 @@ impl Default for ServicesState {
         Self {
             focus: ServicesFocus::List,
             cursor: 0,
+            selector_offset: std::cell::Cell::new(0),
+            form_offset: std::cell::Cell::new(0),
             detail_scroll: 0,
             detail_max_scroll: std::cell::Cell::new(0),
             fetching: false,
@@ -2671,6 +2677,14 @@ pub(crate) struct App {
     /// Selected account index, shared across Overview/Usage/Setup tabs.
     /// On Setup may also rest on the trailing `+ new` row (== profile_count).
     pub(crate) profile_cursor: usize,
+    pub(crate) overview_selector_offset: std::cell::Cell<usize>,
+    pub(crate) usage_selector_offset: std::cell::Cell<usize>,
+    pub(crate) setup_selector_offset: std::cell::Cell<usize>,
+    pub(crate) chain_selector_offset: std::cell::Cell<usize>,
+    pub(crate) models_selector_offset: std::cell::Cell<usize>,
+    pub(crate) setup_detail_offset: std::cell::Cell<usize>,
+    pub(crate) fallback_detail_offset: std::cell::Cell<usize>,
+    pub(crate) global_config_offset: std::cell::Cell<usize>,
     /// Which harness the Overview lists (`c` cycles). A view filter only — see
     /// [`HarnessFilter`].
     pub(crate) harness_filter: HarnessFilter,
@@ -3221,6 +3235,14 @@ impl App {
             help_scroll: 0,
             help_max_scroll: std::cell::Cell::new(0),
             profile_cursor: 0,
+            overview_selector_offset: std::cell::Cell::new(0),
+            usage_selector_offset: std::cell::Cell::new(0),
+            setup_selector_offset: std::cell::Cell::new(0),
+            chain_selector_offset: std::cell::Cell::new(0),
+            models_selector_offset: std::cell::Cell::new(0),
+            setup_detail_offset: std::cell::Cell::new(0),
+            fallback_detail_offset: std::cell::Cell::new(0),
+            global_config_offset: std::cell::Cell::new(0),
             config_focus: ConfigFocus::Profiles,
             config_action_cursor: 0,
             fallback_focus: FallbackFocus::Chain,

@@ -208,7 +208,7 @@ fn draw_modal_scrolled(
         lines.len().saturating_sub(viewport).min(u16::MAX as usize) as u16
     };
     let scroll = scroll.min(max_scroll) as usize;
-    draw_scrolled_lines(frame, inner, lines, (scroll, scroll + viewport));
+    draw_scrolled_lines(frame, inner, lines, (scroll, scroll + viewport), None);
     if let (Some((_, cell)), Some(row)) = (caret, caret_row) {
         // A caret right after a row's last cell stays on that row, in the
         // right padding, rather than folding onto a row the chunking never

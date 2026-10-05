@@ -167,7 +167,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
     }
 
-    let offset = draw_scrolled_lines(frame, inner, lines, focus);
+    let offset = draw_scrolled_lines(frame, inner, lines, focus, Some(&app.global_config_offset));
     // A caret scrolled off the top has no cell to sit in; leaving the cursor
     // unset is better than parking it on an unrelated row.
     if let Some((cx, row)) = caret

@@ -1454,6 +1454,7 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // `draw_selector_list`'s shared empty state talks about accounts, so
     // render the lens-specific message instead.
     if grouped.is_empty() {
+        app.models_selector_offset.set(0);
         let block = section_box(&title, true, true);
         let inner = block.inner(cols[0]);
         frame.render_widget(block, cols[0]);
@@ -1476,20 +1477,28 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
         return;
     }
-    draw_selector_list(frame, cols[0], &title, true, sel, |w| {
-        grouped
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                let style = if is_anthropic(&m.model) {
-                    Style::default().fg(theme::text_color())
-                } else {
-                    theme::dim()
-                };
-                picker_row(i == sel, true, model_display_name(&m.model), style, w)
-            })
-            .collect()
-    });
+    draw_selector_list(
+        frame,
+        cols[0],
+        &title,
+        true,
+        sel,
+        &app.models_selector_offset,
+        |w| {
+            grouped
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let style = if is_anthropic(&m.model) {
+                        Style::default().fg(theme::text_color())
+                    } else {
+                        theme::dim()
+                    };
+                    picker_row(i == sel, true, model_display_name(&m.model), style, w)
+                })
+                .collect()
+        },
+    );
 
     draw_model_detail(
         frame,

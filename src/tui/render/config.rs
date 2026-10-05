@@ -35,30 +35,38 @@ fn draw_selector(frame: &mut Frame<'_>, area: Rect, app: &App, focused: bool) {
     let cfg = app.config();
     let count = cfg.profiles.len();
     let sel = app.profile_cursor.min(count);
-    draw_selector_list(frame, area, "accounts", focused, sel, |w| {
-        let mut rows: Vec<_> = cfg
-            .profiles
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                // A disabled account can never be active, so dim wins outright.
-                let ns = if p.is_disabled() {
-                    theme::dim()
-                } else {
-                    name_color(cfg.is_active(&p.name))
-                };
-                picker_row(i == sel, focused, p.name.to_string(), ns, w)
-            })
-            .collect();
-        rows.push(picker_row(
-            count == sel,
-            focused,
-            "+ new".to_string(),
-            theme::accent(),
-            w,
-        ));
-        rows
-    });
+    draw_selector_list(
+        frame,
+        area,
+        "accounts",
+        focused,
+        sel,
+        &app.setup_selector_offset,
+        |w| {
+            let mut rows: Vec<_> = cfg
+                .profiles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    // A disabled account can never be active, so dim wins outright.
+                    let ns = if p.is_disabled() {
+                        theme::dim()
+                    } else {
+                        name_color(cfg.is_active(&p.name))
+                    };
+                    picker_row(i == sel, focused, p.name.to_string(), ns, w)
+                })
+                .collect();
+            rows.push(picker_row(
+                count == sel,
+                focused,
+                "+ new".to_string(),
+                theme::accent(),
+                w,
+            ));
+            rows
+        },
+    );
 }
 
 /// Snapshot taken under one short `config` guard, decoupled from render so
@@ -533,7 +541,7 @@ fn draw_settings_rows(
 
     // The row list outgrows a short terminal (env entries + model overrides are
     // unbounded), so it scrolls to the focused row rather than clipping its tail.
-    let offset = draw_scrolled_lines(frame, inner, lines, focus);
+    let offset = draw_scrolled_lines(frame, inner, lines, focus, Some(&app.setup_detail_offset));
 
     // Position the native terminal cursor at the caret when a text/model field is active.
     if let Some((ly, input, row)) = edit_caret

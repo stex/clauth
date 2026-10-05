@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, Paragraph};
+use ratatui::widgets::{ListItem, Paragraph};
 use std::collections::HashSet;
 
 use super::super::app::{App, CodexRow, MainItemKind};
@@ -16,8 +16,8 @@ use super::format::{
 };
 use super::header::pulse_name_spans;
 use super::panes::{
-    bold_when, draw_scrollbar, empty_state, name_color, section_box, section_box_meta, select_line,
-    wrap_words,
+    bold_when, draw_following_list, empty_state, name_color, section_box, section_box_meta,
+    select_line, wrap_words,
 };
 use super::prose::{self, cmd_lit};
 use super::usage::{eta_left_secs, window_rate_unit};
@@ -104,6 +104,7 @@ fn draw_overview_accounts(frame: &mut Frame<'_>, area: Rect, app: &App) {
         &[]
     };
     if app.config().profiles.is_empty() && codex.is_empty() {
+        app.overview_selector_offset.set(0);
         frame.render_widget(empty_state("no accounts yet", "n", "to create one"), inner);
         return;
     }
@@ -150,14 +151,7 @@ fn draw_overview_accounts(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
     }
 
-    let total = rows.len();
-    let list = List::new(rows).style(theme::base());
-    let mut state = ratatui::widgets::ListState::default();
-    state.select(Some(sel));
-    frame.render_stateful_widget(list, list_area, &mut state);
-
-    let viewport = list_area.height as usize;
-    draw_scrollbar(frame, list_area, total, state.offset(), viewport);
+    draw_following_list(frame, list_area, rows, sel, &app.overview_selector_offset);
 }
 
 #[derive(Debug, Clone, Copy)]

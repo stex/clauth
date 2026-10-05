@@ -1,6 +1,8 @@
 //! Shared widgets: the bordered section box every pane uses, and the account
 //! picker shared by the Usage and Setup tabs.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -445,20 +447,25 @@ const SCROLL_PAD: usize = 3;
 /// Returns the applied offset so a caller placing the native terminal cursor can
 /// shift its row by it.
 ///
-/// These panes rebuild one `Vec<Line>` per frame and hold no offset in `App`, so
-/// the scroll is derived from the focused block each draw. Without it a pane
-/// taller than its viewport silently drops its bottom rows — no scrollbar, no
-/// clue anything is missing, which is how a hint tooltip and a whole settings
-/// row went missing on a 24-row terminal.
+/// The scroll follows the focused block without clipping wrapped hints. A
+/// stateful form passes its own offset; other callers derive one each draw.
 pub(super) fn draw_scrolled_lines(
     frame: &mut Frame<'_>,
     inner: Rect,
     lines: Vec<Line<'static>>,
     focus: (usize, usize),
+    saved: Option<&Cell<usize>>,
 ) -> usize {
     let total = lines.len();
     let viewport = inner.height as usize;
-    let offset = scroll_offset(total, viewport, focus);
+    let offset = saved.map_or_else(
+        || scroll_offset(total, viewport, focus),
+        |saved| {
+            let offset = follow_scroll_offset(total, viewport, focus, saved.get());
+            saved.set(offset);
+            offset
+        },
+    );
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::base())
@@ -473,11 +480,8 @@ pub(super) fn draw_scrolled_lines(
 /// exclusive) plus a [`SCROLL_PAD`] band on screen, clamped to the content.
 ///
 /// The block, not just its first line: a row's help tooltip wraps to the pane
-/// width, so a narrow pane can push a 4-line hint past the viewport while the
-/// row it explains sits comfortably on screen. Capping at `focus.0` keeps the
-/// row itself visible when its block is taller than the whole viewport. The
-/// focus alone determines the offset, so no cross-frame state is needed and the
-/// view can never drift out of sync with the cursor.
+/// width. Capping at `focus.0` keeps the row visible when the block is taller
+/// than the viewport. Stateless callers keep their existing focus-derived view.
 pub(super) fn scroll_offset(total: usize, viewport: usize, focus: (usize, usize)) -> usize {
     if viewport == 0 || total <= viewport {
         return 0;
@@ -489,6 +493,59 @@ pub(super) fn scroll_offset(total: usize, viewport: usize, focus: (usize, usize)
         .min(total - viewport)
 }
 
+pub(super) fn follow_scroll_offset(
+    total: usize,
+    viewport: usize,
+    focus: (usize, usize),
+    prior: usize,
+) -> usize {
+    if viewport == 0 || total <= viewport {
+        return 0;
+    }
+    let max = total - viewport;
+    let offset = prior.min(max);
+    let pad = SCROLL_PAD.min(viewport.saturating_sub(1) / 2);
+    let minimum = focus.1.saturating_sub(viewport).min(focus.0);
+    let maximum = focus.0.min(max);
+    if focus.0 < offset.saturating_add(pad) {
+        focus.0.saturating_sub(pad).max(minimum).min(maximum)
+    } else if focus.1.saturating_add(pad) > offset.saturating_add(viewport) {
+        focus
+            .1
+            .saturating_add(pad)
+            .saturating_sub(viewport)
+            .max(minimum)
+            .min(maximum)
+    } else {
+        offset.clamp(minimum, maximum)
+    }
+}
+
+pub(super) fn draw_following_list(
+    frame: &mut Frame<'_>,
+    inner: Rect,
+    rows: Vec<ListItem<'static>>,
+    sel: usize,
+    offset: &Cell<usize>,
+) {
+    let total = rows.len();
+    let viewport = inner.height as usize;
+    let prior = if viewport == 0 || total <= viewport {
+        0
+    } else {
+        offset.get().min(total - viewport)
+    };
+    let mut state = ListState::default().with_offset(prior);
+    state.select(Some(sel));
+    frame.render_stateful_widget(
+        List::new(rows).style(theme::base()).scroll_padding(3),
+        inner,
+        &mut state,
+    );
+    offset.set(state.offset());
+    draw_scrollbar(frame, inner, total, state.offset(), viewport);
+}
+
 /// Bordered selector list; `build_rows` receives the inner width for the selection bar.
 pub(super) fn draw_selector_list(
     frame: &mut Frame<'_>,
@@ -496,6 +553,7 @@ pub(super) fn draw_selector_list(
     title: &str,
     focused: bool,
     sel: usize,
+    offset: &Cell<usize>,
     build_rows: impl FnOnce(u16) -> Vec<Line<'static>>,
 ) {
     let block = section_box(title, focused, true);
@@ -504,19 +562,18 @@ pub(super) fn draw_selector_list(
 
     let rows = build_rows(inner.width);
     if rows.is_empty() {
+        offset.set(0);
         frame.render_widget(empty_state("no accounts yet", "n", "to create one"), inner);
         return;
     }
 
-    let total = rows.len();
-    let list =
-        List::new(rows.into_iter().map(ListItem::new).collect::<Vec<_>>()).style(theme::base());
-    let mut state = ListState::default();
-    state.select(Some(sel));
-    frame.render_stateful_widget(list, inner, &mut state);
-
-    let viewport = inner.height as usize;
-    draw_scrollbar(frame, inner, total, state.offset(), viewport);
+    draw_following_list(
+        frame,
+        inner,
+        rows.into_iter().map(ListItem::new).collect(),
+        sel,
+        offset,
+    );
 }
 
 /// A `├`/`└` fix-hint line: glyph + text at col 0/2, anchored to the caller's
@@ -829,19 +886,27 @@ pub(super) fn draw_profile_selector(
 ) {
     let cfg = app.config();
     let sel = selected.min(cfg.profiles.len().saturating_sub(1));
-    draw_selector_list(frame, area, "accounts", focused, sel, |w| {
-        cfg.profiles
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                // A disabled account can never be active, so dim wins outright.
-                let ns = if p.is_disabled() {
-                    theme::dim()
-                } else {
-                    name_color(cfg.is_active(&p.name))
-                };
-                picker_row(i == sel, focused, p.name.to_string(), ns, w)
-            })
-            .collect()
-    });
+    draw_selector_list(
+        frame,
+        area,
+        "accounts",
+        focused,
+        sel,
+        &app.usage_selector_offset,
+        |w| {
+            cfg.profiles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    // A disabled account can never be active, so dim wins outright.
+                    let ns = if p.is_disabled() {
+                        theme::dim()
+                    } else {
+                        name_color(cfg.is_active(&p.name))
+                    };
+                    picker_row(i == sel, focused, p.name.to_string(), ns, w)
+                })
+                .collect()
+        },
+    );
 }

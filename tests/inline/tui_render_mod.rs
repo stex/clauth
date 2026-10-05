@@ -132,6 +132,369 @@ fn dump(app: &App, w: u16, h: u16) -> String {
 }
 
 #[test]
+fn overview_selection_moves_inside_a_persistent_viewport() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: (0..25)
+            .map(|i| oauth(&format!("fixture-{i:02}"), 40.0, 20.0, false))
+            .collect(),
+    });
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    app.profile_cursor = 20;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let first = crate::testutil::buffer_rows(term.backend().buffer());
+    let before = first
+        .iter()
+        .position(|line| line.contains("fixture-20"))
+        .expect("selected account visible");
+    app.profile_cursor = 18;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let second = crate::testutil::buffer_rows(term.backend().buffer());
+    let after = second
+        .iter()
+        .position(|line| line.contains("fixture-18"))
+        .expect("previous account visible");
+    assert_eq!(after + 2, before, "the cursor moves within the viewport");
+    assert!(
+        second.iter().any(|line| line.contains("fixture-21")),
+        "three later rows stay visible"
+    );
+}
+
+#[test]
+fn account_selectors_hold_separate_viewports_across_tabs_and_resize() {
+    use crate::tui::app::Tab;
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: (0..25)
+            .map(|i| oauth(&format!("fixture-{i:02}"), 40.0, 20.0, false))
+            .collect(),
+    });
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    app.profile_cursor = 20;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    app.tab = Tab::Setup;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let setup_offset = app.setup_selector_offset.get();
+    assert!(setup_offset > 0, "setup scrolled to selected account");
+    app.tab = Tab::Usage;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    assert!(
+        app.usage_selector_offset.get() > 0,
+        "usage has its own viewport"
+    );
+    app.profile_cursor = 0;
+    app.tab = Tab::Overview;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    assert_eq!(
+        app.overview_selector_offset.get(),
+        0,
+        "overview begins at its first row"
+    );
+    app.tab = Tab::Setup;
+    term.backend_mut().resize(80, 14);
+    term.autoresize().unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    assert_eq!(
+        app.setup_selector_offset.get(),
+        0,
+        "resize and selection clamp the old viewport"
+    );
+    assert_eq!(
+        setup_offset,
+        app.usage_selector_offset.get(),
+        "inactive usage offset persists"
+    );
+}
+
+#[test]
+fn incident_selector_moves_by_two_rows_without_recentering() {
+    use crate::tui::app::Tab;
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: Vec::new(),
+    });
+    let template = demo_incidents().remove(0);
+    app.status.incidents = (0..12)
+        .map(|i| {
+            let mut incident = template.clone();
+            incident.title = format!("incident-{i:02}");
+            incident
+        })
+        .collect();
+    app.tab = Tab::Status;
+    app.status.cursor = 11;
+    let mut term = Terminal::new(TestBackend::new(80, 17)).unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let bottom = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        bottom.iter().any(|line| line.contains("incident-11")),
+        "last item is visible"
+    );
+    let bottom_bar: String = (5..14)
+        .map(|y| {
+            term.backend()
+                .buffer()
+                .cell((22, y))
+                .unwrap()
+                .symbol()
+                .to_string()
+        })
+        .collect();
+    assert!(
+        bottom_bar.ends_with('┃'),
+        "thumb reaches the bottom: {bottom_bar}"
+    );
+    app.status.cursor = 10;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let first = crate::testutil::buffer_rows(term.backend().buffer());
+    let before = first
+        .iter()
+        .position(|line| line.contains("incident-10"))
+        .expect("selected incident visible");
+    app.status.cursor = 9;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let second = crate::testutil::buffer_rows(term.backend().buffer());
+    let after = second
+        .iter()
+        .position(|line| line.contains("incident-09"))
+        .expect("previous incident visible");
+    assert_eq!(
+        after + 2,
+        before,
+        "both rows move inside the persistent viewport"
+    );
+    app.status.cursor = 11;
+    app.status.selector_offset.set(16);
+    term.backend_mut().resize(80, 19);
+    term.autoresize().unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    assert_eq!(
+        app.status.selector_offset.get(),
+        12,
+        "13-line viewport starts at a title, not an orphan phase"
+    );
+    let resized = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        resized[4].contains("incident-06"),
+        "the first visible row is incident 06's title"
+    );
+    assert!(
+        resized.iter().any(|line| line.contains("incident-11")),
+        "final incident remains reachable"
+    );
+    term.backend_mut().resize(80, 10);
+    term.autoresize().unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let tiny = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        tiny.iter().any(|line| line.contains("incident-11")),
+        "one-line selector shows selected title"
+    );
+}
+
+#[test]
+fn long_config_pane_follows_selection_without_repinning() {
+    use crate::tui::app::{GLOBAL_CONFIG_ROWS, GlobalConfigRow, Tab};
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: Vec::new(),
+    });
+    app.tab = Tab::Config;
+    app.global_config_cursor = GLOBAL_CONFIG_ROWS.len() - 1;
+    let mut term = Terminal::new(TestBackend::new(80, 14)).unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    assert!(
+        app.global_config_offset.get() > 0,
+        "last config row needs an offset"
+    );
+    app.global_config_cursor = GLOBAL_CONFIG_ROWS
+        .iter()
+        .position(|r| *r == GlobalConfigRow::SpendBudget)
+        .unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let middle = app.global_config_offset.get();
+    assert!(middle > 0, "middle selection keeps rows above it");
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    let before = rows
+        .iter()
+        .position(|r| r.contains("allow extra usage"))
+        .unwrap();
+    app.global_config_cursor += 1;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    let after = rows
+        .iter()
+        .position(|r| r.contains("allow extra usage"))
+        .unwrap();
+    assert_eq!(after, before, "nearby selection does not recenter the form");
+    app.global_config_cursor = 0;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    assert_eq!(
+        app.global_config_offset.get(),
+        0,
+        "first row restores the top"
+    );
+}
+
+#[test]
+fn services_selector_keeps_adjacent_rows_visible_and_clamps_after_shrink() {
+    use crate::tui::app::{Check, Health, Tab};
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: Vec::new(),
+    });
+    app.tab = Tab::Services;
+    let labels = ["shunt", "delegates", "plugin", "herdr"];
+    app.services.checks = labels
+        .iter()
+        .map(|label| Check {
+            label,
+            health: Health::Warn,
+            detail: vec!["service ready".into()],
+            fix: None,
+            problems: Vec::new(),
+            shunt_focus: Vec::new(),
+            shunt_action_start: None,
+        })
+        .collect();
+    app.services.cursor = 3;
+    let mut term = Terminal::new(TestBackend::new(80, 9)).unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let bottom = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(bottom[6].contains("herdr"), "last service is visible");
+    assert_eq!(
+        app.services.selector_offset.get(),
+        1,
+        "short list scrolls one row"
+    );
+    app.services.cursor = 2;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let adjacent = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        adjacent[5].contains("plugin"),
+        "cursor moves inside the viewport"
+    );
+    assert!(
+        adjacent[6].contains("herdr"),
+        "lower context remains visible"
+    );
+    assert_eq!(
+        app.services.selector_offset.get(),
+        1,
+        "adjacent selection keeps the viewport"
+    );
+    app.services.checks.truncate(1);
+    app.services.cursor = 0;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    assert_eq!(
+        app.services.selector_offset.get(),
+        0,
+        "shorter list resets offset"
+    );
+}
+
+#[test]
+fn a_three_line_status_viewport_shows_only_whole_incidents() {
+    use crate::tui::app::Tab;
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: Vec::new(),
+    });
+    let template = demo_incidents().remove(0);
+    app.status.incidents = (0..12)
+        .map(|i| {
+            let mut incident = template.clone();
+            incident.title = format!("incident-{i:02}");
+            incident
+        })
+        .collect();
+    app.tab = Tab::Status;
+    app.status.cursor = 11;
+    let mut term = Terminal::new(TestBackend::new(80, 9)).unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(rows[4].contains("incident-11"), "selected title is visible");
+    assert!(rows[5].contains("[ minor ]"), "selected phase is visible");
+    assert!(!rows[6].contains("incident-"), "no orphan title at bottom");
+    assert_eq!(app.status.selector_offset.get(), 22);
+    assert_eq!(
+        term.backend().buffer().cell((22, 6)).unwrap().symbol(),
+        "┃",
+        "thumb reaches the bottom of the full panel viewport"
+    );
+    assert_eq!(
+        term.backend().buffer().cell((22, 5)).unwrap().symbol(),
+        "┊",
+        "track occupies the whole panel above the bottom thumb"
+    );
+    app.status.cursor = 0;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(rows[4].contains("incident-00"), "first title is reachable");
+    assert!(rows[5].contains("[ minor ]"), "first phase is visible");
+    assert!(
+        !rows[6].contains("incident-"),
+        "bottom stays whole at the top"
+    );
+    assert_eq!(
+        term.backend().buffer().cell((22, 4)).unwrap().symbol(),
+        "┃",
+        "thumb reaches the top"
+    );
+}
+
+#[test]
+fn a_shrunk_selector_restores_its_first_row_and_removes_its_bar() {
+    use crate::tui::app::Tab;
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: (0..25)
+            .map(|i| oauth(&format!("fixture-{i:02}"), 40.0, 20.0, false))
+            .collect(),
+    });
+    app.tab = Tab::Usage;
+    app.profile_cursor = 24;
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    assert!(app.usage_selector_offset.get() > 0);
+    app.config().profiles.truncate(5);
+    app.profile_cursor = 4;
+    term.draw(|f| super::draw(f, &app)).unwrap();
+    let lines = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        lines.iter().any(|line| line.contains("fixture-00")),
+        "first row returns"
+    );
+    assert_eq!(
+        app.usage_selector_offset.get(),
+        0,
+        "fitting list has no offset"
+    );
+    let bar: String = (4..22)
+        .map(|y| {
+            term.backend()
+                .buffer()
+                .cell((23, y))
+                .unwrap()
+                .symbol()
+                .to_string()
+        })
+        .collect();
+    assert!(
+        !bar.contains('┊') && !bar.contains('┃'),
+        "fitting list has no scrollbar: {bar}"
+    );
+}
+
+#[test]
 fn hybrid_renders_the_activity_and_deadline_of_its_provider_cache() {
     let _home = crate::testutil::HomeSandbox::new();
     use crate::profile::{ClaudeCredentials, OAuthToken};
@@ -1632,17 +1995,15 @@ fn form_panes_keep_the_focused_row_on_screen_when_they_overflow() {
         "an overflowing pane shows its scrollbar thumb:\n{bottom}"
     );
 
-    // Cursor back near the top with a hinted row (so the pane still overflows):
-    // the offset really tracks the cursor both ways — the first band header is
-    // back AND the bottom row has gone off screen.
+    // The viewport follows this row without snapping back to the top.
     app.global_config_cursor = GLOBAL_CONFIG_ROWS
         .iter()
         .position(|r| *r == GlobalConfigRow::DivergenceDefault)
         .unwrap();
     let top = dump(&app, 90, 24);
     assert!(
-        top.contains("APPEARANCE"),
-        "the first band header is back on screen at the top:\n{top}"
+        top.contains("on mismatch"),
+        "the focused row stays in view without jumping to the top:\n{top}"
     );
     assert!(
         !top.contains("extra usage spent"),
@@ -2026,6 +2387,17 @@ fn scroll_offset_keeps_the_whole_focused_block_on_screen() {
     assert_eq!(scroll_offset(12, 20, (8, 11)), 0);
     // A block already on screen without scrolling stays put.
     assert_eq!(scroll_offset(30, 20, (2, 5)), 0);
+}
+
+#[test]
+fn form_scroll_follows_without_repinning_and_clamps_wrapped_blocks() {
+    use super::panes::follow_scroll_offset;
+    assert_eq!(follow_scroll_offset(30, 10, (15, 16), 10), 10);
+    assert_eq!(follow_scroll_offset(30, 10, (16, 17), 10), 10);
+    assert_eq!(follow_scroll_offset(30, 10, (7, 8), 10), 4);
+    assert_eq!(follow_scroll_offset(30, 10, (18, 22), 10), 15);
+    assert_eq!(follow_scroll_offset(40, 10, (5, 30), 0), 5);
+    assert_eq!(follow_scroll_offset(8, 10, (7, 8), 20), 0);
 }
 
 /// End-to-end wiring for the reset-display setting (issue #39). The formatters

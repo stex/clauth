@@ -70,93 +70,101 @@ fn draw_chain_selector(
     let kick_lifts = switch_grade_kick_lifts(&app.kick_blocks);
     let cfg = app.config();
     let sel = app.chain_cursor.min(items.len().saturating_sub(1));
-    draw_selector_list(frame, area, "chain", focused, sel, |w| {
-        items
-            .iter()
-            .enumerate()
-            .map(|(row, item)| {
-                let selected = row == sel;
-                let line = match item {
-                    ChainItemKind::Member(i) => {
-                        let name = cfg
-                            .state
-                            .fallback_chain
-                            .get(*i)
-                            .cloned()
-                            .unwrap_or_default();
-                        // `#n` right-aligned in a fixed 3 cells, so `#1` and
-                        // `#10` start their names on the same column. The
-                        // trailing gap absorbs the `#`, keeping the rail the
-                        // same total width it had as a bare number — nothing
-                        // downstream shifts.
-                        let ord = format!("#{}", i + 1);
-                        let rail = if selected && focused {
-                            Span::styled(format!("❯ {ord:>3} "), theme::accent().bold())
-                        } else {
-                            Span::styled(format!("  {ord:>3} "), theme::faint())
-                        };
-                        // A member still sits in `fallback_chain` on disk while
-                        // disabled (only the walk skips it), so it renders as a
-                        // normal row with a dim name; the exclusion itself
-                        // arrives through `blocked_reason`'s `Disabled` arm like
-                        // any other block. It can never be `is_active`, so dim
-                        // always wins over `name_color`.
-                        let disabled = cfg.find(&name).is_some_and(|p| p.is_disabled());
-                        let ns = if disabled {
-                            bold_when(theme::dim(), selected && focused)
-                        } else {
-                            bold_when(name_color(cfg.is_active(&name)), selected && focused)
-                        };
-                        let reason = cfg.find(&name).and_then(|p| {
-                            blocked_reason(
-                                &cfg,
-                                p,
-                                kick_lifts.get(name.as_str()).copied(),
-                                key_rejected,
-                            )
-                        });
-                        let rail_w = rail.width();
-                        let mut spans = vec![rail];
-                        match &reason {
-                            // The 1-cell marker is right-aligned at the row's last
-                            // content column (the scrollbar owns the padding cell
-                            // beyond it, so they never collide), and the name is
-                            // clamped to whatever that leaves. Unclamped, a long
-                            // enough name pushed the marker past the pane and
-                            // ratatui dropped it, so a blocked account rendered
-                            // identically to a healthy one. Only a row that
-                            // actually carries a marker pays the clamp — the name
-                            // column's width therefore tracks blocked state.
-                            Some(reason) => {
-                                let name_w = (w as usize).saturating_sub(rail_w + 2);
-                                let (text, pad) = fixed_split(&name, name_w);
-                                spans.push(Span::styled(text, ns));
-                                spans.push(Span::raw(format!("{pad} ")));
-                                spans.push(reason_marker(reason));
+    draw_selector_list(
+        frame,
+        area,
+        "chain",
+        focused,
+        sel,
+        &app.chain_selector_offset,
+        |w| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(row, item)| {
+                    let selected = row == sel;
+                    let line = match item {
+                        ChainItemKind::Member(i) => {
+                            let name = cfg
+                                .state
+                                .fallback_chain
+                                .get(*i)
+                                .cloned()
+                                .unwrap_or_default();
+                            // `#n` right-aligned in a fixed 3 cells, so `#1` and
+                            // `#10` start their names on the same column. The
+                            // trailing gap absorbs the `#`, keeping the rail the
+                            // same total width it had as a bare number — nothing
+                            // downstream shifts.
+                            let ord = format!("#{}", i + 1);
+                            let rail = if selected && focused {
+                                Span::styled(format!("❯ {ord:>3} "), theme::accent().bold())
+                            } else {
+                                Span::styled(format!("  {ord:>3} "), theme::faint())
+                            };
+                            // A member still sits in `fallback_chain` on disk while
+                            // disabled (only the walk skips it), so it renders as a
+                            // normal row with a dim name; the exclusion itself
+                            // arrives through `blocked_reason`'s `Disabled` arm like
+                            // any other block. It can never be `is_active`, so dim
+                            // always wins over `name_color`.
+                            let disabled = cfg.find(&name).is_some_and(|p| p.is_disabled());
+                            let ns = if disabled {
+                                bold_when(theme::dim(), selected && focused)
+                            } else {
+                                bold_when(name_color(cfg.is_active(&name)), selected && focused)
+                            };
+                            let reason = cfg.find(&name).and_then(|p| {
+                                blocked_reason(
+                                    &cfg,
+                                    p,
+                                    kick_lifts.get(name.as_str()).copied(),
+                                    key_rejected,
+                                )
+                            });
+                            let rail_w = rail.width();
+                            let mut spans = vec![rail];
+                            match &reason {
+                                // The 1-cell marker is right-aligned at the row's last
+                                // content column (the scrollbar owns the padding cell
+                                // beyond it, so they never collide), and the name is
+                                // clamped to whatever that leaves. Unclamped, a long
+                                // enough name pushed the marker past the pane and
+                                // ratatui dropped it, so a blocked account rendered
+                                // identically to a healthy one. Only a row that
+                                // actually carries a marker pays the clamp — the name
+                                // column's width therefore tracks blocked state.
+                                Some(reason) => {
+                                    let name_w = (w as usize).saturating_sub(rail_w + 2);
+                                    let (text, pad) = fixed_split(&name, name_w);
+                                    spans.push(Span::styled(text, ns));
+                                    spans.push(Span::raw(format!("{pad} ")));
+                                    spans.push(reason_marker(reason));
+                                }
+                                None => spans.push(Span::styled(name.to_string(), ns)),
                             }
-                            None => spans.push(Span::styled(name.to_string(), ns)),
+                            Line::from(spans)
                         }
-                        Line::from(spans)
-                    }
-                    ChainItemKind::Add => {
-                        let arrow = if selected && focused {
-                            Span::styled("❯ ", theme::accent().bold())
-                        } else {
-                            Span::raw("  ")
-                        };
-                        Line::from(vec![
-                            arrow,
-                            Span::styled(
-                                "    + add",
-                                bold_when(theme::accent(), selected && focused),
-                            ),
-                        ])
-                    }
-                };
-                select_line(line, selected, focused, w)
-            })
-            .collect()
-    });
+                        ChainItemKind::Add => {
+                            let arrow = if selected && focused {
+                                Span::styled("❯ ", theme::accent().bold())
+                            } else {
+                                Span::raw("  ")
+                            };
+                            Line::from(vec![
+                                arrow,
+                                Span::styled(
+                                    "    + add",
+                                    bold_when(theme::accent(), selected && focused),
+                                ),
+                            ])
+                        }
+                    };
+                    select_line(line, selected, focused, w)
+                })
+                .collect()
+        },
+    );
 }
 
 fn draw_chain_detail(
@@ -295,7 +303,13 @@ fn draw_chain_detail(
         Some(ChainItemKind::Add) => add_focus,
         Some(ChainItemKind::Member(_)) | None => (0, 0),
     };
-    let scroll = draw_scrolled_lines(frame, inner, lines, focus);
+    let scroll = draw_scrolled_lines(
+        frame,
+        inner,
+        lines,
+        focus,
+        Some(&app.fallback_detail_offset),
+    );
 
     // Position the native terminal cursor for whichever field is being typed,
     // matching the post-draw cursor path the other edit screens use. This is not
