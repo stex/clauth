@@ -1,6 +1,6 @@
 # Interface and keys
 
-`clauth` opens on the Overview tab. <kbd>←</kbd> <kbd>→</kbd> move between tabs, <kbd>?</kbd> lists every binding for the tab you are on, <kbd>q</kbd> twice quits.
+`clauth` opens on the Overview tab. <kbd>←</kbd> <kbd>→</kbd> move between tabs except while Usage or Tokens model detail has focus: <kbd>←</kbd> returns to the selector and <kbd>→</kbd> does nothing there. <kbd>?</kbd> lists every binding for the tab you are on; <kbd>q</kbd> twice quits from the top level.
 
 ## Tabs
 
@@ -25,7 +25,7 @@ Codex accounts ([Codex](Codex)) sit under the Claude Code rows in a section head
 
 | Key | Action |
 |-----|--------|
-| <kbd>←</kbd> <kbd>→</kbd> (or <kbd>tab</kbd> / <kbd>⇧tab</kbd>) | previous / next tab |
+| <kbd>←</kbd> <kbd>→</kbd> (or <kbd>tab</kbd> / <kbd>⇧tab</kbd>) | previous / next tab; in descended Usage or Tokens model detail, <kbd>←</kbd> returns to the selector and <kbd>→</kbd> does nothing, while <kbd>tab</kbd> / <kbd>⇧tab</kbd> still switch tabs |
 | <kbd>↑</kbd> <kbd>↓</kbd> | move the selection through long lists without snapping it to an edge, or scroll a detail pane |
 | <kbd>⏎</kbd> | act on the selected row (see below) |
 | <kbd>n</kbd> | new account · on the usage tab: edit the account's note |
@@ -37,7 +37,7 @@ Codex accounts ([Codex](Codex)) sit under the Claude Code rows in a section head
 | <kbd>q</kbd> | step back, or arm quit at the top level; press again to confirm |
 | <kbd>ctrl</kbd>+<kbd>c</kbd> | quit from anywhere |
 
-Toasts stack in the top-right corner, at most three lines each: a longer message ends its third line in `…`.
+A descended Usage or Tokens model detail scrolls one line with <kbd>↑</kbd> / <kbd>↓</kbd> and one current viewport with <kbd>PageUp</kbd> / <kbd>PageDown</kbd>; <kbd>esc</kbd> or <kbd>←</kbd> returns to its selector without changing the selected account or model. A scrollbar appears only when content overflows. Toasts stack in the top-right corner, at most three lines each: a longer message ends its third line in `…`.
 
 ### Tab-dependent
 
@@ -45,7 +45,7 @@ Toasts stack in the top-right corner, at most three lines each: a longer message
 |-----|----------|
 | <kbd>r</kbd> | Usage: refresh the selected account only. Tokens / Status / Services: reload that tab's data. Everywhere else: refresh every Claude Code account |
 | <kbd>t</kbd> | Tokens: cycle the period lens. Everywhere else: force-rotate every Claude Code account's token, after a confirm |
-| <kbd>⏎</kbd> | Overview: switch to the selected account. Tokens: open the model breakdown. Setup / Fallback: open a detail row, or commit an edit; on a Fallback card's `preferred days` row, open the day picker. Status / Services: open the detail (on the `shunt` card's focused `enabled` row, flip it) |
+| <kbd>⏎</kbd> | Overview: switch to the selected account. Usage: descend into the selected account's detail to scroll its full breakdown. Tokens: open the model breakdown, then descend into the selected model's detail; a view with no model has no detail to open. Setup / Fallback: open a detail row, or commit an edit; on a Fallback card's `preferred days` row, open the day picker. Status / Services: open the detail (on the `shunt` card's focused `enabled` row, flip it) |
 | <kbd>⇧↑</kbd> <kbd>⇧↓</kbd> | Overview: reorder accounts. Fallback (chain focus): reorder chain members |
 | <kbd>space</kbd> | Config: cycle a value. Setup `model` row and Fallback toggle rows: flip. Fallback `preferred days`: step `never` → `weekdays` → `weekends` → `every day` and back to `never`, saving each step; a custom set is one more stop after `every day` until you leave the card. Services `shunt` card, on the focused `enabled` row: flip it |
 | <kbd>+</kbd> <kbd>-</kbd> | Fallback detail: step `rotate at` or `weekly at` by 5 |
