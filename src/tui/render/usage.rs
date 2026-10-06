@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::super::app::{App, NoteBuffer};
+use super::super::app::{App, NoteBuffer, StatusFocus};
 use super::super::theme;
 use super::format::{
     ResetFmt, activity_verb, is_past_reset, reset_in_secs_at, reset_phrase, spinner_frame,
@@ -98,7 +98,13 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let items = app.config().profiles.len();
     let (selector, detail) = master_detail(area, items);
 
-    draw_profile_selector(frame, selector, app, app.profile_cursor, true);
+    draw_profile_selector(
+        frame,
+        selector,
+        app,
+        app.profile_cursor,
+        app.usage_detail_focus == StatusFocus::List,
+    );
     draw_usage_detail(frame, detail, app);
 }
 
@@ -179,17 +185,18 @@ fn draw_usage_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .get(app.profile_cursor.min(cfg.profiles.len().saturating_sub(1)));
 
     let title = profile.map(|p| p.name.as_str()).unwrap_or("usage");
-    // Detail pane: read-only, focus never descends into it; second panel on screen.
-    // Profile names preserve original case; the "usage" fallback stays uppercased.
+    let focused = app.usage_detail_focus == StatusFocus::Detail;
     let block = if profile.is_some() {
-        section_box_verbatim(title, false, false)
+        section_box_verbatim(title, focused, false)
     } else {
-        section_box(title, false, false)
+        section_box(title, focused, false)
     };
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let Some(profile) = profile else {
+        app.usage_detail_max_scroll.set(0);
+        app.usage_detail_viewport.set(0);
         frame.render_widget(empty_state("no accounts yet", "n", "to create one"), inner);
         return;
     };
@@ -284,7 +291,30 @@ fn draw_usage_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         show_pace,
         reset_fmt,
     );
-    frame.render_widget(Paragraph::new(lines).style(theme::base()), content_area);
+    let total = lines.len();
+    let viewport = content_area.height as usize;
+    let max_scroll = if viewport == 0 {
+        0
+    } else {
+        total.saturating_sub(viewport)
+    };
+    app.usage_detail_max_scroll.set(max_scroll);
+    app.usage_detail_viewport.set(viewport);
+    let scroll = app.usage_detail_scroll.min(max_scroll);
+    // Paragraph::scroll accepts u16; large saved notes can exceed that row limit.
+    let paragraph = if scroll > usize::from(u16::MAX) {
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(scroll)
+                .take(viewport)
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        Paragraph::new(lines).scroll((scroll as u16, 0))
+    };
+    frame.render_widget(paragraph.style(theme::base()), content_area);
+    draw_scrollbar(frame, content_area, total, scroll, viewport);
     if let Some(editor) = slot {
         draw_note_slot(frame, slot_area.unwrap_or(inner), &editor.buf);
     }

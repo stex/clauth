@@ -11,7 +11,7 @@ use super::super::app::{
     App, ConfigFocus, ConfigRow, FallbackHint, FooterAlert, GLOBAL_CONFIG_ROWS, GlobalConfigRow,
     HERDR_OPTIONS, HerdrOption, KeyOwner, LoginSession, Modal, ServiceFix, ServicesFocus,
     ShuntFocus, StatusFocus, Tab, TokenView, build_action_menu, config_rows, fallback_hint,
-    fix_verb, has_sub_focus, herdr_config_writable, keyboard_owner,
+    fix_verb, has_sub_focus, herdr_config_writable, keyboard_owner, token_model_count,
 };
 use super::super::theme;
 use super::format::spinner_frame;
@@ -88,7 +88,17 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         None => owner
             .is_none()
-            .then_some(TAB_NAV)
+            .then_some(
+                if (app.tab == Tab::Usage && app.usage_detail_focus == StatusFocus::Detail)
+                    || (app.tab == Tab::Tokens
+                        && app.token_view == TokenView::Models
+                        && app.model_detail_focus == StatusFocus::Detail)
+                {
+                    ("←", "back")
+                } else {
+                    TAB_NAV
+                },
+            )
             .into_iter()
             .chain(tab_hints(app))
             .collect(),
@@ -175,8 +185,16 @@ fn tab_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         // The hint derives from the key's behavior on this frame: with no
         // accounts, `n` still starts a new account (the empty state's promise)
         // and the note editor does not exist yet.
+        Tab::Usage if app.usage_detail_focus == StatusFocus::Detail => &[
+            ("↑↓", "scroll"),
+            ("r", "refresh account"),
+            ("n", "note"),
+            ("a", "actions"),
+            ("?", "help"),
+        ],
         Tab::Usage if app.profile_count() > 0 => &[
             ("↑↓", "account"),
+            ("↵", "detail"),
             ("r", "refresh account"),
             ("n", "note"),
             ("a", "actions"),
@@ -184,6 +202,13 @@ fn tab_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         ],
         Tab::Usage => &[("↑↓", "account"), ("a", "actions"), ("?", "help")],
         Tab::Tokens => match app.token_view {
+            TokenView::Dashboard if token_model_count(app) == 0 => &[
+                ("r", "reload"),
+                ("c", "count cache"),
+                ("t", "period"),
+                ("a", "actions"),
+                ("?", "help"),
+            ],
             TokenView::Dashboard => &[
                 ("↵", "models"),
                 ("r", "reload"),
@@ -192,8 +217,23 @@ fn tab_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 ("a", "actions"),
                 ("?", "help"),
             ],
+            TokenView::Models if app.model_detail_focus == StatusFocus::Detail => &[
+                ("↑↓", "scroll"),
+                ("c", "count cache"),
+                ("t", "period"),
+                ("a", "actions"),
+                ("?", "help"),
+            ],
+            TokenView::Models if token_model_count(app) == 0 => &[
+                ("↑↓", "model"),
+                ("c", "count cache"),
+                ("t", "period"),
+                ("a", "actions"),
+                ("?", "help"),
+            ],
             TokenView::Models => &[
                 ("↑↓", "model"),
+                ("↵", "detail"),
                 ("c", "count cache"),
                 ("t", "period"),
                 ("a", "actions"),

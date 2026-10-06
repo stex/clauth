@@ -10913,6 +10913,327 @@ fn fallback_usage_gate_toggles_persist() {
     assert!(!reloaded.check_scoped);
 }
 
+#[test]
+fn usage_roster_reload_with_no_accounts_returns_to_selector() {
+    use super::{StatusFocus, Tab, handle_key, on_tick};
+    use ratatui::crossterm::event::KeyCode;
+
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = app_with_unlinked_profiles(vec![crate::testutil::blank_profile(
+        &crate::profile::ProfileName::from("alpha"),
+    )]);
+    app.tab = Tab::Usage;
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+    assert_eq!(app.usage_detail_focus, StatusFocus::Detail);
+    app.usage_detail_scroll = 7;
+    let mut state = crate::profile::load_app_state().expect("read roster before external removal");
+    state.profiles.clear();
+    state.fallback_chain.clear();
+    crate::profile::save_app_state(&state).expect("external removal saves roster");
+    let path = crate::profile::clauth_dir()
+        .expect("clauth dir")
+        .join("profiles.toml");
+    crate::testutil::set_mtime(
+        &path,
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000),
+    );
+    on_tick(&mut app);
+    assert_eq!(
+        app.profile_count(),
+        0,
+        "the reload removed the last account"
+    );
+    assert_eq!(app.tab, Tab::Usage, "the tab remains Usage");
+    assert_eq!(
+        app.usage_detail_focus,
+        StatusFocus::List,
+        "empty roster returns to selector"
+    );
+    assert_eq!(
+        app.usage_detail_scroll, 0,
+        "the old detail scroll does not survive"
+    );
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 14)).unwrap();
+    term.draw(|f| crate::tui::render::draw(f, &app)).unwrap();
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        rows.iter().any(|row| row.contains("no accounts yet")),
+        "empty Usage selector is visible"
+    );
+    assert!(
+        rows[13].contains("q quit"),
+        "footer no longer advertises descended focus"
+    );
+}
+
+#[test]
+fn usage_read_only_detail_keys_keep_account_and_return_to_selector() {
+    use super::{StatusFocus, Tab, handle_key};
+    use crate::profile::{AppConfig, AppState, ProfileName};
+    use ratatui::crossterm::event::KeyCode;
+    let _home = crate::testutil::HomeSandbox::new();
+    let first = crate::testutil::blank_profile(&ProfileName::from("alpha"));
+    let second = crate::testutil::blank_profile(&ProfileName::from("beta"));
+    let mut app = App::new(AppConfig {
+        state: AppState {
+            profiles: vec![first.name.clone(), second.name.clone()],
+            ..AppState::default()
+        },
+        profiles: vec![first, second],
+    });
+    app.tab = Tab::Usage;
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    assert_eq!(app.profile_cursor, 1, "at rest ↓ changes account");
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+    assert_eq!(app.usage_detail_focus, StatusFocus::Detail);
+    app.usage_detail_max_scroll.set(20);
+    app.usage_detail_viewport.set(8);
+    handle_key(&mut app, crate::testutil::key(KeyCode::PageDown));
+    assert_eq!(
+        app.usage_detail_scroll, 8,
+        "page moves by the current viewport"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    assert_eq!(app.usage_detail_scroll, 9, "↓ scrolls one real detail line");
+    assert_eq!(
+        app.profile_cursor, 1,
+        "detail scroll does not change account"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Left));
+    assert_eq!(app.usage_detail_focus, StatusFocus::List);
+    assert_eq!(app.tab, Tab::Usage, "← ascends rather than switching tabs");
+    handle_key(&mut app, crate::testutil::key(KeyCode::Up));
+    assert_eq!(app.profile_cursor, 0, "↑ once again selects accounts");
+}
+
+#[test]
+fn tokens_models_detail_keys_keep_model_and_return_to_selector() {
+    use super::{StatusFocus, Tab, TokenView, handle_key};
+    use crate::tokens::{ModelTokens, TokenStats};
+    use ratatui::crossterm::event::KeyCode;
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = bare_app();
+    app.tab = Tab::Tokens;
+    app.token_view = TokenView::Models;
+    app.token_stats = Some(TokenStats {
+        models: vec![
+            ModelTokens {
+                model: "claude-alpha".into(),
+                input: 10_000_000,
+                ..Default::default()
+            },
+            ModelTokens {
+                model: "claude-beta".into(),
+                input: 5_000_000,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    });
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    assert_eq!(app.token_model_cursor, 1, "at rest ↓ changes model");
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+    assert_eq!(app.model_detail_focus, StatusFocus::Detail);
+    app.model_detail_max_scroll.set(15);
+    app.model_detail_viewport.set(6);
+    handle_key(&mut app, crate::testutil::key(KeyCode::PageDown));
+    assert_eq!(app.model_detail_scroll, 6, "page moves by current viewport");
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    assert_eq!(app.model_detail_scroll, 7);
+    assert_eq!(app.token_model_cursor, 1, "detail scroll retains model");
+    handle_key(&mut app, crate::testutil::key(KeyCode::Esc));
+    assert_eq!(app.model_detail_focus, StatusFocus::List);
+    assert_eq!(
+        app.token_view,
+        TokenView::Models,
+        "esc ascends only one level"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Up));
+    assert_eq!(app.token_model_cursor, 0, "↑ once again selects models");
+}
+
+#[test]
+fn models_detail_resets_scroll_when_period_or_filter_changes() {
+    use super::{Tab, TokenFilter, TokenPeriod, TokenView, set_token_filter, set_token_period};
+    use crate::tokens::{ModelTokens, TokenStats};
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = bare_app();
+    app.tab = Tab::Tokens;
+    app.token_view = TokenView::Models;
+    app.token_stats = Some(TokenStats {
+        models: vec![
+            ModelTokens {
+                model: "claude-alpha".into(),
+                input: 10_000_000,
+                ..Default::default()
+            },
+            ModelTokens {
+                model: "other-beta".into(),
+                input: 5_000_000,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    });
+    app.model_detail_scroll = 9;
+    set_token_filter(&mut app, TokenFilter::Others);
+    assert_eq!(
+        app.model_detail_scroll, 0,
+        "a changed filtered model starts at the top"
+    );
+    app.model_detail_scroll = 8;
+    set_token_period(&mut app, TokenPeriod::Daily);
+    assert_eq!(
+        app.model_detail_scroll, 0,
+        "a new period starts at its first detail row"
+    );
+}
+
+#[test]
+fn empty_model_list_returns_detail_focus_on_filter_period_and_load() {
+    use super::{
+        ActionMenuAction, StatusFocus, Tab, TokenFilter, TokenPeriod, TokenView,
+        dispatch_action_menu_action, drain_tokens_events, handle_key,
+    };
+    use crate::tokens::{ModelTokens, TokenStats, TokensEvent};
+    use ratatui::crossterm::event::KeyCode;
+
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = bare_app();
+    app.tab = Tab::Tokens;
+    app.token_stats = Some(TokenStats {
+        models: vec![ModelTokens {
+            model: "claude-opus-4-8".into(),
+            input: 10_000_000,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.tokens_events = rx;
+
+    for producer in ["filter", "period key", "period menu", "loaded"] {
+        app.token_view = TokenView::Dashboard;
+        app.token_filter = TokenFilter::All;
+        app.token_period = TokenPeriod::Lifetime;
+        app.model_detail_focus = StatusFocus::List;
+        handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        assert_eq!(
+            app.token_view,
+            TokenView::Models,
+            "{producer}: model rows are enterable"
+        );
+        handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        assert_eq!(
+            app.model_detail_focus,
+            StatusFocus::Detail,
+            "{producer}: detail is focused"
+        );
+        app.model_detail_scroll = 7;
+        match producer {
+            "filter" => dispatch_action_menu_action(&mut app, ActionMenuAction::TokensShowOthers),
+            "period key" => handle_key(&mut app, crate::testutil::key(KeyCode::Char('t'))),
+            "period menu" => {
+                dispatch_action_menu_action(&mut app, ActionMenuAction::TokensPeriodWeekly)
+            }
+            "loaded" => {
+                tx.send(TokensEvent::Loaded(Box::<TokenStats>::default()))
+                    .unwrap();
+                drain_tokens_events(&mut app);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            super::token_model_count(&app),
+            0,
+            "{producer}: no model remains"
+        );
+        assert_eq!(
+            app.token_view,
+            TokenView::Models,
+            "{producer}: keep the models screen"
+        );
+        assert_eq!(
+            app.model_detail_focus,
+            StatusFocus::List,
+            "{producer}: return to selector"
+        );
+        assert_eq!(
+            app.model_detail_scroll, 0,
+            "{producer}: reset the missing detail's scroll"
+        );
+        app.token_stats = Some(TokenStats {
+            models: vec![ModelTokens {
+                model: "claude-opus-4-8".into(),
+                input: 10_000_000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+    }
+}
+
+#[test]
+fn calendar_rollover_reconciles_empty_model_detail_on_tick() {
+    use super::{StatusFocus, Tab, TokenPeriod, TokenView, on_tick};
+    use crate::tokens::{DayModelTokens, ModelTokens, TokenStats};
+
+    let _home = crate::testutil::HomeSandbox::new();
+    let prior = crate::usage::epoch_secs_to_iso(crate::usage::now_epoch_secs() - 40 * 24 * 60 * 60);
+    let prior = prior[..10].to_owned();
+    for period in [TokenPeriod::Weekly, TokenPeriod::Monthly] {
+        let mut app = bare_app();
+        app.tab = Tab::Tokens;
+        app.token_view = TokenView::Models;
+        app.token_period = period;
+        app.token_stats = Some(TokenStats {
+            daily_models: vec![DayModelTokens {
+                date: prior.clone(),
+                model: "claude-opus-4-8".into(),
+                in_out: 20,
+                split: Some(ModelTokens {
+                    model: "claude-opus-4-8".into(),
+                    input: 12,
+                    output: 8,
+                    ..Default::default()
+                }),
+                hours: None,
+            }],
+            ..Default::default()
+        });
+        let bucket = period.bucket().expect("scoped lens");
+        let (from, to) = crate::tokens::current_bucket_bounds(&prior, bucket);
+        assert_eq!(
+            crate::tokens::period_models(
+                &app.token_stats.as_ref().expect("stats").daily_models,
+                &from,
+                &to
+            )
+            .len(),
+            1,
+            "this model was selectable in its previous calendar bucket"
+        );
+        app.model_detail_focus = StatusFocus::Detail;
+        app.model_detail_scroll = 7;
+        assert_eq!(
+            super::token_model_count(&app),
+            0,
+            "the new calendar bucket has no models"
+        );
+        on_tick(&mut app);
+        assert_eq!(app.token_view, TokenView::Models);
+        assert_eq!(
+            app.model_detail_focus,
+            StatusFocus::List,
+            "{period:?}: empty detail ascends at the next tick"
+        );
+        assert_eq!(
+            app.model_detail_scroll, 0,
+            "{period:?}: stale detail scroll clears"
+        );
+    }
+}
+
 // ── tokens tab: model filter via the action menu ─────────────────────────────
 
 #[test]

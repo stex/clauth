@@ -23,12 +23,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::super::app::{App, TokenFilter, TokenPeriod, TokenView, token_period_models};
+use super::super::app::{
+    App, StatusFocus, TokenFilter, TokenPeriod, TokenView, token_period_models,
+};
 use super::super::theme;
 use super::format::{fixed, spinner_frame};
 use super::panes::{
-    draw_selector_list, master_detail, meta_line, picker_row, section_box, section_box_loading,
-    section_box_verbatim,
+    draw_scrollbar, draw_selector_list, master_detail, meta_line, picker_row, section_box,
+    section_box_loading, section_box_verbatim,
 };
 use crate::pricing::{HourTokens, PriceTable};
 use crate::tokens::{
@@ -1455,6 +1457,8 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // render the lens-specific message instead.
     if grouped.is_empty() {
         app.models_selector_offset.set(0);
+        app.model_detail_max_scroll.set(0);
+        app.model_detail_viewport.set(0);
         let block = section_box(&title, true, true);
         let inner = block.inner(cols[0]);
         frame.render_widget(block, cols[0]);
@@ -1471,9 +1475,9 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
             cols[1],
             None,
             0,
-            app.price_table.as_ref(),
-            app.price_failed,
+            (app.price_table.as_ref(), app.price_failed),
             app.token_period,
+            Some(app),
         );
         return;
     }
@@ -1481,7 +1485,7 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
         frame,
         cols[0],
         &title,
-        true,
+        app.model_detail_focus == StatusFocus::List,
         sel,
         &app.models_selector_offset,
         |w| {
@@ -1494,7 +1498,13 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     } else {
                         theme::dim()
                     };
-                    picker_row(i == sel, true, model_display_name(&m.model), style, w)
+                    picker_row(
+                        i == sel,
+                        app.model_detail_focus == StatusFocus::List,
+                        model_display_name(&m.model),
+                        style,
+                        w,
+                    )
                 })
                 .collect()
         },
@@ -1505,9 +1515,9 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
         cols[1],
         grouped.get(sel),
         period_grand(app),
-        app.price_table.as_ref(),
-        app.price_failed,
+        (app.price_table.as_ref(), app.price_failed),
         app.token_period,
+        Some(app),
     );
 }
 
@@ -1538,18 +1548,26 @@ fn draw_model_detail(
     area: Rect,
     model: Option<&PeriodModel>,
     grand: u64,
-    prices: Option<&PriceTable>,
-    rates_failed: bool,
+    (prices, rates_failed): (Option<&PriceTable>, bool),
     period: TokenPeriod,
+    app: Option<&App>,
 ) {
     let title = model
         .map(|m| model_display_name(&m.model))
         .unwrap_or_else(|| "model".to_string());
-    let block = section_box_verbatim(&title, false, false);
+    let block = section_box_verbatim(
+        &title,
+        app.is_some_and(|app| app.model_detail_focus == StatusFocus::Detail),
+        false,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let Some(m) = model else {
+        if let Some(app) = app {
+            app.model_detail_max_scroll.set(0);
+            app.model_detail_viewport.set(0);
+        }
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled("no model data", theme::faint())))
                 .style(theme::base()),
@@ -1713,7 +1731,25 @@ fn draw_model_detail(
         lines.push(Line::from(hit_line));
     }
 
-    frame.render_widget(Paragraph::new(lines).style(theme::base()), inner);
+    let total = lines.len();
+    let viewport = inner.height as usize;
+    let max_scroll = if viewport == 0 {
+        0
+    } else {
+        total.saturating_sub(viewport).min(u16::MAX as usize) as u16
+    };
+    let scroll = app.map_or(0, |app| {
+        app.model_detail_max_scroll.set(max_scroll);
+        app.model_detail_viewport.set(inner.height);
+        app.model_detail_scroll.min(max_scroll)
+    });
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::base())
+            .scroll((scroll, 0)),
+        inner,
+    );
+    draw_scrollbar(frame, inner, total, scroll as usize, viewport);
 }
 
 #[cfg(test)]

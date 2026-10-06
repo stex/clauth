@@ -12,7 +12,8 @@ use crate::profile::DivergenceChoice;
 use super::super::app::{
     ActionMenuState, App, ConfirmAction, ConfirmState, DivergenceAction, DivergenceForm,
     DivergenceTargetForm, EnvCollisionChoice, EnvCollisionForm, InputState, LoginMethod,
-    LoginStage, Modal, NamePromptForm, PresetPickerForm, Tab,
+    LoginStage, Modal, NamePromptForm, PresetPickerForm, StatusFocus, Tab, TokenView,
+    token_model_count,
 };
 use super::super::theme;
 use super::chain::reason_marker;
@@ -660,11 +661,8 @@ fn draw_preset_picker(frame: &mut Frame<'_>, area: Rect, form: &PresetPickerForm
 /// sections. A standalone builder (not inlined into `draw_help`) so tests can
 /// enumerate every tab's real content without rendering a frame — see
 /// `every_sub_focus_tab_documents_esc_in_help`.
-fn tab_specific_rows(
-    tab: Tab,
-    has_accounts: bool,
-) -> Vec<(&'static str, &'static [(&'static str, &'static str)])> {
-    match tab {
+fn tab_specific_rows(app: &App) -> Vec<(&'static str, &'static [(&'static str, &'static str)])> {
+    match app.tab {
         Tab::Overview => vec![(
             "accounts",
             &[
@@ -676,10 +674,25 @@ fn tab_specific_rows(
         // `n` is the note editor only while an account exists to hold one; on
         // an empty roster the global `n new account` row must survive the
         // shadow filter below, matching the empty state's `n to create one`.
-        Tab::Usage if has_accounts => vec![(
+        Tab::Usage if app.usage_detail_focus == StatusFocus::Detail => vec![(
+            "usage",
+            &[
+                ("\u{2191} \u{2193}", "scroll account detail"),
+                ("page up", "scroll account detail up a viewport"),
+                ("page down", "scroll account detail down a viewport"),
+                ("esc", "return to account selector"),
+                ("\u{2190}", "return to account selector"),
+                ("r", "refresh account"),
+                ("n", "edit the account's note"),
+                ("e", "toggle estimates"),
+                ("p", "toggle pace marker"),
+            ][..],
+        )],
+        Tab::Usage if app.profile_count() > 0 => vec![(
             "usage",
             &[
                 ("\u{2191} \u{2193}", "pick account to inspect"),
+                ("\u{21b5}", "open account detail"),
                 ("r", "refresh account"),
                 ("n", "edit the account's note"),
                 ("e", "toggle estimates"),
@@ -694,18 +707,72 @@ fn tab_specific_rows(
                 ("p", "toggle pace marker"),
             ][..],
         )],
-        Tab::Tokens => vec![(
+        Tab::Tokens if app.token_view == TokenView::Dashboard && token_model_count(app) == 0 => {
+            vec![(
+                "tokens",
+                &[
+                    ("c", "count cache in token figures"),
+                    (
+                        "t",
+                        "cycle period \u{b7} lifetime / daily / weekly / monthly",
+                    ),
+                    ("r", "reload on-disk stats"),
+                ][..],
+            )]
+        }
+        Tab::Tokens if app.token_view == TokenView::Dashboard => vec![(
             "tokens",
             &[
                 ("\u{21b5}", "open per-model breakdown"),
-                ("\u{2191} \u{2193}", "pick model (in breakdown)"),
                 ("c", "count cache in token figures"),
                 (
                     "t",
                     "cycle period \u{b7} lifetime / daily / weekly / monthly",
                 ),
                 ("r", "reload on-disk stats"),
+            ][..],
+        )],
+        Tab::Tokens if app.model_detail_focus == StatusFocus::Detail => vec![(
+            "tokens",
+            &[
+                ("\u{2191} \u{2193}", "scroll model detail"),
+                ("page up", "scroll model detail up a viewport"),
+                ("page down", "scroll model detail down a viewport"),
+                ("esc", "return to model selector"),
+                ("\u{2190}", "return to model selector"),
+                ("c", "count cache in token figures"),
+                (
+                    "t",
+                    "cycle period \u{b7} lifetime / daily / weekly / monthly",
+                ),
+                ("r", "reload on-disk stats"),
+            ][..],
+        )],
+        Tab::Tokens if token_model_count(app) == 0 => vec![(
+            "tokens",
+            &[
+                ("\u{2191} \u{2193}", "pick model"),
                 ("esc", "back to dashboard"),
+                ("c", "count cache in token figures"),
+                (
+                    "t",
+                    "cycle period \u{b7} lifetime / daily / weekly / monthly",
+                ),
+                ("r", "reload on-disk stats"),
+            ][..],
+        )],
+        Tab::Tokens => vec![(
+            "tokens",
+            &[
+                ("\u{2191} \u{2193}", "pick model"),
+                ("\u{21b5}", "open model detail"),
+                ("esc", "back to dashboard"),
+                ("c", "count cache in token figures"),
+                (
+                    "t",
+                    "cycle period \u{b7} lifetime / daily / weekly / monthly",
+                ),
+                ("r", "reload on-disk stats"),
             ][..],
         )],
         Tab::Setup => vec![(
@@ -821,16 +888,31 @@ fn tab_specific_rows(
 fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let title = "KEYS";
 
-    let tab_specific = tab_specific_rows(app.tab, app.profile_count() > 0);
+    let tab_specific = tab_specific_rows(app);
 
-    let nav: &[(&str, &str)] = &[(
-        "\u{2190} \u{2192} \u{00b7} tab",
-        concat!(
-            "previous / next tab (",
-            key_lit!("shift tab"),
-            ": previous)"
-        ),
-    )];
+    // In a descended read-only pane, arrows do not switch tabs; Tab/BackTab still do.
+    let nav: &[(&str, &str)] = if (app.tab == Tab::Usage
+        && app.usage_detail_focus == StatusFocus::Detail)
+        || (app.tab == Tab::Tokens
+            && app.token_view == TokenView::Models
+            && app.model_detail_focus == StatusFocus::Detail)
+    {
+        &[
+            ("\u{2190}", "return to selector"),
+            ("\u{2192}", "stays on detail"),
+            ("tab", "next tab"),
+            ("shift tab", "previous tab"),
+        ]
+    } else {
+        &[(
+            "\u{2190} \u{2192} \u{00b7} tab",
+            concat!(
+                "previous / next tab (",
+                key_lit!("shift tab"),
+                ": previous)"
+            ),
+        )]
+    };
 
     // The modal's own keys, in their own section. Not folded into `global`
     // below: every tab binds ↑↓ for its own list, so the shadow filter there

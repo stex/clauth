@@ -2679,6 +2679,10 @@ pub(crate) struct App {
     pub(crate) profile_cursor: usize,
     pub(crate) overview_selector_offset: std::cell::Cell<usize>,
     pub(crate) usage_selector_offset: std::cell::Cell<usize>,
+    pub(crate) usage_detail_focus: StatusFocus,
+    pub(crate) usage_detail_scroll: usize,
+    pub(crate) usage_detail_max_scroll: std::cell::Cell<usize>,
+    pub(crate) usage_detail_viewport: std::cell::Cell<usize>,
     pub(crate) setup_selector_offset: std::cell::Cell<usize>,
     pub(crate) chain_selector_offset: std::cell::Cell<usize>,
     pub(crate) models_selector_offset: std::cell::Cell<usize>,
@@ -2810,6 +2814,10 @@ pub(crate) struct App {
     pub(crate) token_view: TokenView,
     /// Cursor into the grouped model list on the Tokens `Models` view.
     pub(crate) token_model_cursor: usize,
+    pub(crate) model_detail_focus: StatusFocus,
+    pub(crate) model_detail_scroll: u16,
+    pub(crate) model_detail_max_scroll: std::cell::Cell<u16>,
+    pub(crate) model_detail_viewport: std::cell::Cell<u16>,
     /// Model filter over the Tokens tab's model surfaces (action-menu driven).
     pub(crate) token_filter: TokenFilter,
     pub(crate) token_period: TokenPeriod,
@@ -3237,6 +3245,10 @@ impl App {
             profile_cursor: 0,
             overview_selector_offset: std::cell::Cell::new(0),
             usage_selector_offset: std::cell::Cell::new(0),
+            usage_detail_focus: StatusFocus::List,
+            usage_detail_scroll: 0,
+            usage_detail_max_scroll: std::cell::Cell::new(0),
+            usage_detail_viewport: std::cell::Cell::new(0),
             setup_selector_offset: std::cell::Cell::new(0),
             chain_selector_offset: std::cell::Cell::new(0),
             models_selector_offset: std::cell::Cell::new(0),
@@ -3287,6 +3299,10 @@ impl App {
             tokens_progress: None,
             token_view: TokenView::Dashboard,
             token_model_cursor: 0,
+            model_detail_focus: StatusFocus::List,
+            model_detail_scroll: 0,
+            model_detail_max_scroll: std::cell::Cell::new(0),
+            model_detail_viewport: std::cell::Cell::new(0),
             token_filter: TokenFilter::default(),
             token_period: TokenPeriod::default(),
             tokens_events,
@@ -4157,7 +4173,8 @@ pub(super) fn reconcile_startup(app: &mut App) {
 /// `q back` / `q quit` label; the help-modal esc-row test iterates it too, so
 /// a new sub-focus tab without an `esc` help row fails CI.
 pub(crate) fn has_sub_focus(app: &App) -> bool {
-    (app.tab == Tab::Setup && app.config_focus == ConfigFocus::Actions)
+    (app.tab == Tab::Usage && app.usage_detail_focus == StatusFocus::Detail)
+        || (app.tab == Tab::Setup && app.config_focus == ConfigFocus::Actions)
         || (app.tab == Tab::Fallback && app.fallback_focus == FallbackFocus::Detail)
         || (app.tab == Tab::Status && app.status.focus == StatusFocus::Detail)
         || (app.tab == Tab::Services && app.services.focus == ServicesFocus::Detail)
@@ -4286,6 +4303,26 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
+        KeyCode::Left if app.tab == Tab::Usage && app.usage_detail_focus == StatusFocus::Detail => {
+            app.usage_detail_focus = StatusFocus::List;
+            return;
+        }
+        KeyCode::Left
+            if app.tab == Tab::Tokens
+                && app.token_view == TokenView::Models
+                && app.model_detail_focus == StatusFocus::Detail =>
+        {
+            app.model_detail_focus = StatusFocus::List;
+            return;
+        }
+        KeyCode::Right
+            if (app.tab == Tab::Usage && app.usage_detail_focus == StatusFocus::Detail)
+                || (app.tab == Tab::Tokens
+                    && app.token_view == TokenView::Models
+                    && app.model_detail_focus == StatusFocus::Detail) =>
+        {
+            return;
+        }
         KeyCode::Right | KeyCode::Tab => {
             app.disarm_quit();
             switch_tab(app, app.tab.next());
@@ -4382,7 +4419,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         // Esc backs out of sub-focus; no-op at the top level.
         KeyCode::Esc => {
             app.disarm_quit();
-            if app.tab == Tab::Setup && app.config_focus == ConfigFocus::Actions {
+            if app.tab == Tab::Usage && app.usage_detail_focus == StatusFocus::Detail {
+                app.usage_detail_focus = StatusFocus::List;
+            } else if app.tab == Tab::Tokens
+                && app.token_view == TokenView::Models
+                && app.model_detail_focus == StatusFocus::Detail
+            {
+                app.model_detail_focus = StatusFocus::List;
+            } else if app.tab == Tab::Setup && app.config_focus == ConfigFocus::Actions {
                 leave_config_detail(app);
             } else if app.tab == Tab::Fallback && app.fallback_focus == FallbackFocus::Detail {
                 leave_fallback_detail(app);
@@ -4401,7 +4445,11 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('q') => {
             if has_sub_focus(app) {
                 app.disarm_quit();
-                if app.tab == Tab::Setup {
+                if app.tab == Tab::Usage {
+                    app.usage_detail_focus = StatusFocus::List;
+                } else if app.tab == Tab::Tokens && app.model_detail_focus == StatusFocus::Detail {
+                    app.model_detail_focus = StatusFocus::List;
+                } else if app.tab == Tab::Setup {
                     leave_config_detail(app);
                 } else if app.tab == Tab::Fallback {
                     leave_fallback_detail(app);
@@ -4512,8 +4560,20 @@ pub(crate) fn token_period_models(app: &App) -> Vec<crate::tokens::PeriodModel> 
 
 /// Number of rows in the Tokens `Models` master list under the active
 /// period + filter lenses.
-fn token_model_count(app: &App) -> usize {
+pub(crate) fn token_model_count(app: &App) -> usize {
     token_period_models(app).len()
+}
+
+/// Keep detail focus on a model only while the active list can select one.
+fn clamp_token_model_cursor(app: &mut App) {
+    let len = token_model_count(app);
+    if len == 0 {
+        app.model_detail_focus = StatusFocus::List;
+        app.model_detail_scroll = 0;
+    }
+    if app.token_model_cursor >= len {
+        app.token_model_cursor = len.saturating_sub(1);
+    }
 }
 
 /// Tokens `r` / action-menu reload: re-read the on-disk stats + recent
@@ -4528,10 +4588,8 @@ fn reload_token_stats(app: &mut App) {
     app.toast(ToastKind::Info, "reloading token usage");
 }
 
-/// Tokens tab: `c` toggles cache-counting (persisted) on either view (`t`'s
-/// period cycle is claimed by the global key arm); Dashboard descends to
-/// Models on ⏎; Models moves the model cursor with ↑↓ (ascend handled by the
-/// global esc/q).
+/// Tokens tab: `c` toggles cache-counting on either view; Dashboard enters
+/// Models on ⏎. From Models, ⏎ descends into the read-only detail.
 fn handle_tokens_key(app: &mut App, key: KeyEvent) {
     if key.code == KeyCode::Char('c') {
         toggle_count_cache(app);
@@ -4542,19 +4600,55 @@ fn handle_tokens_key(app: &mut App, key: KeyEvent) {
             // Dashboard is a fixed grid (no scroll); ⏎ descends into Models.
             if key.code == KeyCode::Enter && token_model_count(app) > 0 {
                 app.token_view = TokenView::Models;
+                app.model_detail_focus = StatusFocus::List;
+                app.model_detail_scroll = 0;
                 app.token_model_cursor = 0;
             }
         }
         TokenView::Models => {
-            let len = token_model_count(app);
-            match key.code {
-                KeyCode::Up if len > 0 => {
-                    app.token_model_cursor = (app.token_model_cursor + len - 1).rem_euclid(len);
+            if app.model_detail_focus == StatusFocus::Detail {
+                let max = app.model_detail_max_scroll.get();
+                let viewport = app.model_detail_viewport.get();
+                match key.code {
+                    KeyCode::Up => {
+                        app.model_detail_scroll = app.model_detail_scroll.min(max).saturating_sub(1)
+                    }
+                    KeyCode::Down => {
+                        app.model_detail_scroll =
+                            app.model_detail_scroll.min(max).saturating_add(1).min(max)
+                    }
+                    KeyCode::PageUp => {
+                        app.model_detail_scroll = app
+                            .model_detail_scroll
+                            .min(max)
+                            .saturating_sub(viewport.max(1))
+                    }
+                    KeyCode::PageDown => {
+                        app.model_detail_scroll = app
+                            .model_detail_scroll
+                            .min(max)
+                            .saturating_add(viewport.max(1))
+                            .min(max)
+                    }
+                    _ => {}
                 }
-                KeyCode::Down if len > 0 => {
-                    app.token_model_cursor = (app.token_model_cursor + 1).rem_euclid(len);
+            } else {
+                let len = token_model_count(app);
+                match key.code {
+                    KeyCode::Up if len > 0 => {
+                        app.token_model_cursor = (app.token_model_cursor + len - 1).rem_euclid(len);
+                        app.model_detail_scroll = 0;
+                    }
+                    KeyCode::Down if len > 0 => {
+                        app.token_model_cursor = (app.token_model_cursor + 1).rem_euclid(len);
+                        app.model_detail_scroll = 0;
+                    }
+                    KeyCode::Enter if len > 0 => {
+                        app.model_detail_focus = StatusFocus::Detail;
+                        app.model_detail_scroll = 0;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -4571,10 +4665,16 @@ fn switch_tab(app: &mut App, tab: Tab) {
     // Clamp cursor: a Config `+ new` selection must land on a real account.
     app.clamp_profile_cursor();
     match tab {
-        Tab::Overview | Tab::Usage => {}
+        Tab::Overview => {}
+        Tab::Usage => {
+            app.usage_detail_focus = StatusFocus::List;
+            app.usage_detail_scroll = 0;
+        }
         Tab::Tokens => {
             // Land on the dashboard; keep the model cursor reset for descend.
             app.token_view = TokenView::Dashboard;
+            app.model_detail_focus = StatusFocus::List;
+            app.model_detail_scroll = 0;
             app.token_model_cursor = 0;
         }
         Tab::Setup => {
@@ -4655,12 +4755,52 @@ fn handle_overview_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Usage tab: up/down picks the account. Read-only pane.
+/// Usage tab: account selection at rest, read-only detail scrolling on descent.
 fn handle_usage_key(app: &mut App, key: KeyEvent) {
+    if app.usage_detail_focus == StatusFocus::Detail {
+        let max = app.usage_detail_max_scroll.get();
+        let viewport = app.usage_detail_viewport.get();
+        match key.code {
+            KeyCode::Up => {
+                app.usage_detail_scroll = app.usage_detail_scroll.min(max).saturating_sub(1)
+            }
+            KeyCode::Down => {
+                app.usage_detail_scroll =
+                    app.usage_detail_scroll.min(max).saturating_add(1).min(max)
+            }
+            KeyCode::PageUp => {
+                app.usage_detail_scroll = app
+                    .usage_detail_scroll
+                    .min(max)
+                    .saturating_sub(viewport.max(1))
+            }
+            KeyCode::PageDown => {
+                app.usage_detail_scroll = app
+                    .usage_detail_scroll
+                    .min(max)
+                    .saturating_add(viewport.max(1))
+                    .min(max)
+            }
+            KeyCode::Char('e') => toggle_show_estimates(app),
+            KeyCode::Char('p') => toggle_show_pace(app),
+            _ => {}
+        }
+        return;
+    }
     let count = app.profile_count();
     match key.code {
-        KeyCode::Up => step_profile_cursor(app, -1, count),
-        KeyCode::Down => step_profile_cursor(app, 1, count),
+        KeyCode::Up => {
+            step_profile_cursor(app, -1, count);
+            app.usage_detail_scroll = 0;
+        }
+        KeyCode::Down => {
+            step_profile_cursor(app, 1, count);
+            app.usage_detail_scroll = 0;
+        }
+        KeyCode::Enter if count > 0 => {
+            app.usage_detail_focus = StatusFocus::Detail;
+            app.usage_detail_scroll = 0;
+        }
         KeyCode::Char('e') => toggle_show_estimates(app),
         KeyCode::Char('p') => toggle_show_pace(app),
         _ => {}
@@ -9980,20 +10120,16 @@ fn reprobe_daemon(app: &mut App) {
 /// list can be shorter than where the cursor sat.
 fn set_token_filter(app: &mut App, filter: TokenFilter) {
     app.token_filter = filter;
-    let len = token_model_count(app);
-    if app.token_model_cursor >= len {
-        app.token_model_cursor = len.saturating_sub(1);
-    }
+    app.model_detail_scroll = 0;
+    clamp_token_model_cursor(app);
 }
 
 /// Swap the Tokens period lens and re-clamp the Models cursor — the scoped
 /// list can be shorter than where the cursor sat.
 fn set_token_period(app: &mut App, period: TokenPeriod) {
     app.token_period = period;
-    let len = token_model_count(app);
-    if app.token_model_cursor >= len {
-        app.token_model_cursor = len.saturating_sub(1);
-    }
+    app.model_detail_scroll = 0;
+    clamp_token_model_cursor(app);
 }
 
 /// Setup tab keymap. Left: ↑↓ + ⏎ enters detail. Right: ↑↓ walks rows, ⏎
@@ -13134,11 +13270,8 @@ fn drain_tokens_events(app: &mut App) {
                 app.tokens_topping_up = false;
                 app.tokens_progress = None;
                 app.token_stats = Some(*stats);
-                // Re-clamp the model cursor in case the grouped list shrank.
-                let len = token_model_count(app);
-                if len > 0 && app.token_model_cursor >= len {
-                    app.token_model_cursor = len - 1;
-                }
+                // Re-clamp after the loader replaces the grouped list.
+                clamp_token_model_cursor(app);
             }
             // Surface failure only when there is nothing to show — a transient
             // read error mid-session keeps the last good snapshot.
@@ -13412,11 +13545,21 @@ pub(crate) fn on_tick(app: &mut App) {
     drain_op_results(app);
     drain_status_events(app);
     drain_tokens_events(app);
+    if app.tab == Tab::Tokens
+        && app.token_view == TokenView::Models
+        && app.token_period.bucket().is_some()
+    {
+        clamp_token_model_cursor(app);
+    }
     drain_pricing_events(app);
     drain_login_events(app);
 
     if app.reload_if_state_changed() {
         app.clamp_profile_cursor();
+        if app.profile_count() == 0 {
+            app.usage_detail_focus = StatusFocus::List;
+            app.usage_detail_scroll = 0;
+        }
     }
     app.apply_usage();
 

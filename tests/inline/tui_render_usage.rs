@@ -3022,6 +3022,177 @@ fn the_best_effort_report_footer_survives_a_narrow_usage_pane() {
     );
 }
 
+#[test]
+fn usage_detail_scroll_reaches_the_final_note_without_changing_account() {
+    use crate::profile::{AppConfig, AppState, ProfileName};
+    use crate::tui::app::{Tab, handle_key};
+    use crate::usage::{ScopedWindow, UsageInfo, UsageWindow};
+    use ratatui::crossterm::event::KeyCode;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let _home = crate::testutil::HomeSandbox::new();
+    crate::testutil::register_names(&["many"]);
+    let name = ProfileName::from("many");
+    let mut profile = crate::testutil::blank_profile(&name);
+    profile.usage = Some(UsageInfo {
+        five_hour: Some(UsageWindow {
+            utilization: 23.0,
+            resets_at: None,
+        }),
+        seven_day: Some(UsageWindow {
+            utilization: 37.0,
+            resets_at: None,
+        }),
+        weekly_scoped: (0..12)
+            .map(|n| ScopedWindow {
+                label: format!("7d scope-{n:02}"),
+                window: UsageWindow {
+                    utilization: 42.0,
+                    resets_at: None,
+                },
+            })
+            .collect(),
+        ..UsageInfo::default()
+    });
+    let mut app = App::new(AppConfig {
+        state: AppState {
+            profiles: vec![name],
+            ..AppState::default()
+        },
+        profiles: vec![profile],
+    });
+    app.tab = Tab::Usage;
+    app.note_text = Some("last visible note".to_string());
+    let mut term = Terminal::new(TestBackend::new(80, 14)).unwrap();
+    term.draw(|f| draw(f, f.area(), &app)).unwrap();
+    let first = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        !first.concat().contains("last visible note"),
+        "the long pane begins at its first window"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+    for _ in 0..70 {
+        handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    }
+    term.draw(|f| draw(f, f.area(), &app)).unwrap();
+    let last = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        last.concat().contains("last visible note"),
+        "scroll reaches the final note"
+    );
+    assert_eq!(
+        app.profile_cursor, 0,
+        "detail scrolling keeps the account selected"
+    );
+    let (selector, detail) = super::master_detail(ratatui::layout::Rect::new(0, 0, 80, 14), 1);
+    let bar_x = detail.x + detail.width - 2;
+    assert_eq!(
+        term.backend().buffer().cell((bar_x, 12)).unwrap().symbol(),
+        "┃",
+        "the bottom scrollbar thumb reaches the last content line"
+    );
+    assert_eq!(
+        term.backend()
+            .buffer()
+            .cell((selector.x + 1, 1))
+            .unwrap()
+            .symbol(),
+        " ",
+        "selector has no focus caret while detail scrolls"
+    );
+    assert_eq!(
+        term.backend().buffer().cell((detail.x, 0)).unwrap().fg,
+        theme::line_strong_color(),
+        "the focused detail border is strong"
+    );
+    assert_eq!(
+        term.backend().buffer().cell((selector.x, 0)).unwrap().fg,
+        theme::line_color(),
+        "the selector border is blurred"
+    );
+    term.backend_mut().resize(80, 40);
+    term.autoresize().unwrap();
+    term.draw(|f| draw(f, f.area(), &app)).unwrap();
+    assert_eq!(
+        app.usage_detail_max_scroll.get(),
+        8,
+        "resized viewport publishes the smaller bound"
+    );
+    let at = app.usage_detail_scroll;
+    handle_key(&mut app, crate::testutil::key(KeyCode::Up));
+    assert!(
+        app.usage_detail_scroll < at,
+        "↑ moves from the resized bound"
+    );
+}
+
+#[test]
+fn usage_detail_reaches_note_after_more_than_u16_rows() {
+    use crate::profile::{AppConfig, AppState, ProfileName};
+    use crate::tui::app::{StatusFocus, Tab, handle_key};
+    use ratatui::crossterm::event::KeyCode;
+    use ratatui::{Terminal, backend::TestBackend};
+    let _home = crate::testutil::HomeSandbox::new();
+    let name = ProfileName::from("long-note");
+    let mut app = App::new(AppConfig {
+        state: AppState {
+            profiles: vec![name.clone()],
+            ..AppState::default()
+        },
+        profiles: vec![crate::testutil::blank_profile(&name)],
+    });
+    app.tab = Tab::Usage;
+    app.note_text = Some(format!("{}final note row", "x\n".repeat(66_000)));
+    assert_eq!(notes_lines(app.note_text.as_deref(), 50).len(), 66_001);
+    app.usage_detail_focus = StatusFocus::Detail;
+    let mut term = Terminal::new(TestBackend::new(80, 14)).unwrap();
+    term.draw(|f| draw(f, f.area(), &app)).unwrap();
+    app.usage_detail_scroll = usize::from(u16::MAX);
+    for _ in 0..80 {
+        handle_key(&mut app, crate::testutil::key(KeyCode::PageDown));
+    }
+    term.draw(|f| draw(f, f.area(), &app)).unwrap();
+    assert!(
+        crate::testutil::buffer_rows(term.backend().buffer())
+            .concat()
+            .contains("final note row"),
+        "even an unbounded note's tail is reachable"
+    );
+}
+
+#[test]
+fn fitting_usage_detail_has_no_scrollbar() {
+    use crate::profile::{AppConfig, AppState, ProfileName};
+    use ratatui::{Terminal, backend::TestBackend};
+    let _home = crate::testutil::HomeSandbox::new();
+    let name = ProfileName::from("short");
+    let mut app = App::new(AppConfig {
+        state: AppState {
+            profiles: vec![name.clone()],
+            ..AppState::default()
+        },
+        profiles: vec![crate::testutil::blank_profile(&name)],
+    });
+    app.tab = crate::tui::app::Tab::Usage;
+    let mut term = Terminal::new(TestBackend::new(80, 40)).unwrap();
+    term.draw(|f| draw(f, f.area(), &app)).unwrap();
+    let (_, detail) = super::master_detail(ratatui::layout::Rect::new(0, 0, 80, 40), 1);
+    assert_eq!(
+        app.usage_detail_max_scroll.get(),
+        0,
+        "fitting account has no scroll bound"
+    );
+    assert_eq!(
+        term.backend()
+            .buffer()
+            .cell((detail.x + detail.width - 2, 10))
+            .unwrap()
+            .symbol(),
+        " ",
+        "no scrollbar track when content fits"
+    );
+}
+
 /// The `notes:` row: accent key + faint hint while the account has none; the
 /// full note wrapped to the value column, continuation lines aligned under it.
 #[test]
