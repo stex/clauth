@@ -2025,27 +2025,6 @@ pub(crate) fn admin_need(config: &Path) -> Result<AdminNeed> {
     admin_need_of(&read_config_text(config)?, &admin_key_ref()?)
 }
 
-/// Whether the parsed config holds a `[server.admin]` table, whatever its
-/// `write_keys` content: the fact the supervisor re-reads is the table's
-/// presence, not which admin step it needs. `Err` only when the file cannot
-/// be read, does not parse, or `[server]`/`[server.admin]` is not a table.
-pub(crate) fn has_admin_table(config: &Path) -> Result<bool> {
-    let doc = parse_config(&read_config_text(config)?)?;
-    let Some(server) = doc.get("server") else {
-        return Ok(false);
-    };
-    let server = server
-        .as_table_like()
-        .ok_or(ConfigEditRefusal::UnexpectedShape { what: SERVER_SHAPE })?;
-    let Some(admin) = server.get("admin") else {
-        return Ok(false);
-    };
-    admin
-        .as_table_like()
-        .ok_or(ConfigEditRefusal::UnexpectedShape { what: ADMIN_SHAPE })?;
-    Ok(true)
-}
-
 /// [`admin_need`] over a config's text and clauth's `${file:}` reference.
 fn admin_need_of(text: &str, key_ref: &str) -> Result<AdminNeed> {
     Ok(need_in(&parse_config(text)?, key_ref)?)

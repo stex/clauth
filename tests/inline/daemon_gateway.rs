@@ -1187,11 +1187,11 @@ fn a_config_gaining_the_admin_table_restarts_the_gateway_once_without_a_restart_
     );
 }
 
-/// An edit that does not gain the table (another key changed) keeps the
-/// child: only the one fact the ruling names forces the restart.
+/// An edit to a hot-reloadable setting keeps the child: only the restart-only
+/// facts force a restart.
 #[cfg(unix)]
 #[test]
-fn an_edit_that_does_not_gain_the_admin_table_keeps_the_child() {
+fn an_edit_to_a_hot_reloadable_setting_keeps_the_child() {
     let rig = Rig::new("0.49.1");
     let mut supervisor = rig.supervisor();
     let t0 = t0();
@@ -1204,7 +1204,7 @@ fn an_edit_that_does_not_gain_the_admin_table_keeps_the_child() {
     fs::write(
         &rig.config,
         format!(
-            "[server]\nbind = \"127.0.0.1:{}\"\nshutdown_timeout_seconds = 3\n",
+            "[server]\nbind = \"127.0.0.1:{}\"\nshutdown_timeout_seconds = 2\nsse_keepalive_seconds = 60\n",
             rig.port
         ),
     )
@@ -1213,9 +1213,9 @@ fn an_edit_that_does_not_gain_the_admin_table_keeps_the_child() {
     assert_eq!(
         rig.slot().state,
         GatewayState::Healthy,
-        "an edit that keeps the table absent keeps the child"
+        "a hot-reloadable edit keeps the child"
     );
-    assert!(stub::alive(pid), "never stopped for an unrelated edit");
+    assert!(stub::alive(pid), "never stopped for a hot-reloadable edit");
     assert_eq!(rig.calls().len(), 1, "no respawn");
 }
 
@@ -1244,8 +1244,7 @@ fn a_config_that_becomes_unparseable_keeps_the_child() {
     assert_eq!(rig.calls().len(), 1, "no respawn");
 }
 
-/// A config that had the table at spawn and still has it keeps the child: a
-/// table REMOVED since spawn is out of the ruling and also does not restart.
+/// A config that had the table at spawn and still has it keeps the child.
 #[cfg(unix)]
 #[test]
 fn a_config_that_had_the_admin_table_at_spawn_keeps_the_child() {
@@ -1292,7 +1291,7 @@ fn the_admin_table_restart_names_its_cause() {
     supervisor.step(t0.after(secs(2)));
     assert_eq!(rig.slot().state, GatewayState::Stopping);
     let stop_line = format!(
-        "clauth daemon: stopping the shunt gateway (pid {pid}): its config gained [server.admin]"
+        "clauth daemon: stopping the shunt gateway (pid {pid}): its config changed [server.admin]"
     );
     assert_eq!(
         rig.lines
@@ -1335,7 +1334,7 @@ fn a_gained_table_whose_check_is_refused_keeps_the_child_and_logs_once() {
     assert_eq!(rig.check_runs(), 1, "one check for the gained table");
 
     let keep_line = format!(
-        "clauth daemon: the shunt gateway's config gained [server.admin], but `{} check --config {}` refused it (exit 1); keeping the running gateway until the check passes; run that command to see why",
+        "clauth daemon: the shunt gateway's config changed [server.admin], but `{} check --config {}` refused it (exit 1); keeping the running gateway until the check passes; run that command to see why",
         rig.binary.display(),
         rig.config.display()
     );
@@ -1433,7 +1432,7 @@ fn a_check_that_times_out_keeps_the_child() {
     assert_eq!(rig.calls().len(), 1, "no respawn on a timed-out check");
     assert_eq!(rig.check_runs(), 1, "one check ran");
     let keep_line = format!(
-        "clauth daemon: the shunt gateway's config gained [server.admin], but `{} check --config {}` ran past 200ms and was stopped; keeping the running gateway until the check passes; run that command to see why it does not finish",
+        "clauth daemon: the shunt gateway's config changed [server.admin], but `{} check --config {}` ran past 200ms and was stopped; keeping the running gateway until the check passes; run that command to see why it does not finish",
         rig.binary.display(),
         rig.config.display()
     );
@@ -1544,7 +1543,7 @@ fn an_unchanged_refusal_rechecked_twice_logs_once() {
     assert_eq!(rig.calls().len(), 1, "no respawn");
 
     let keep_line = format!(
-        "clauth daemon: the shunt gateway's config gained [server.admin], but `{} check --config {}` refused it (exit 1); keeping the running gateway until the check passes; run that command to see why",
+        "clauth daemon: the shunt gateway's config changed [server.admin], but `{} check --config {}` refused it (exit 1); keeping the running gateway until the check passes; run that command to see why",
         rig.binary.display(),
         rig.config.display()
     );
@@ -1587,7 +1586,7 @@ fn a_missing_check_binary_keeps_the_child_and_names_the_binary() {
     assert_eq!(rig.calls().len(), 1, "no respawn");
 
     let keep_line = format!(
-        "clauth daemon: the shunt gateway's config gained [server.admin], but {} is not there to check it; keeping the running gateway until the check passes",
+        "clauth daemon: the shunt gateway's config changed [server.admin], but {} is not there to check it; keeping the running gateway until the check passes",
         rig.binary.display()
     );
     assert_eq!(
@@ -1666,8 +1665,8 @@ fn a_check_cancelled_before_it_starts_is_cancelled_not_a_timeout_and_never_resta
 }
 
 /// A gained table shaped as clauth's own entry (the shape `add_admin_table`
-/// writes) reads as a table and restarts: `has_admin_table` answers the
-/// table's presence, never the admin step.
+/// writes) reads as present and restarts: the fact is the key's presence,
+/// never which admin step it needs.
 #[cfg(unix)]
 #[test]
 fn a_gained_table_shaped_as_clauths_own_restarts() {
@@ -1690,9 +1689,10 @@ fn a_gained_table_shaped_as_clauths_own_restarts() {
     assert_eq!(rig.check_runs(), 1, "the gain is gated on one check");
 }
 
-/// A child spawned while `[server.admin]` was not a table (mark `None`) does
-/// not restart when the table later appears: a `None` mark at spawn is no
-/// evidence.
+/// A child spawned while `[server.admin]` was a non-table value does not
+/// restart when the table later appears: the fact reads the key's presence,
+/// and a non-table `admin` is already present, so the table's appearance is
+/// no change.
 #[cfg(unix)]
 #[test]
 fn a_config_whose_admin_shape_was_not_a_table_at_spawn_does_not_restart_on_a_gained_table() {
@@ -1719,14 +1719,1090 @@ fn a_config_whose_admin_shape_was_not_a_table_at_spawn_does_not_restart_on_a_gai
     assert_eq!(
         rig.slot().state,
         GatewayState::Healthy,
-        "a None spawn mark is no evidence and keeps the child"
+        "a non-table admin already present at spawn keeps the child"
     );
     assert!(
         stub::alive(pid),
-        "never stopped for a table gained after a None mark"
+        "never stopped for a table that was already present as a value"
     );
     assert_eq!(rig.calls().len(), 1, "no respawn");
-    assert_eq!(rig.check_runs(), 0, "no check runs for a None mark");
+    assert_eq!(rig.check_runs(), 0, "no check runs when nothing changed");
+}
+
+/// Writes `changed` over the rig's config and drives one restart: the child
+/// stops (one SIGTERM), a fresh spawn happens, no crash is counted, one check
+/// ran, and the stop line names `name` (the changed key paths) by equality.
+#[cfg(unix)]
+fn expect_restart(
+    rig: &Rig,
+    supervisor: &mut Supervised,
+    t0: Tick,
+    first_pid: u32,
+    name: &str,
+    changed: &str,
+) {
+    fs::write(&rig.config, changed).expect("config");
+    supervisor.step(t0.after(secs(2)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Stopping,
+        "the restart-only edit restarts the child"
+    );
+    let stop_line = format!(
+        "clauth daemon: stopping the shunt gateway (pid {first_pid}): its config changed {name}"
+    );
+    assert_eq!(
+        rig.lines
+            .snapshot()
+            .iter()
+            .filter(|line| **line == stop_line)
+            .count(),
+        1,
+        "the log names the setting by its key path, never its value"
+    );
+    // The stub dies on its own SIGTERM: wait for the pipe to fall silent,
+    // then step until the reap respawns it (the default-trap restart path,
+    // never a kill at the drain bound).
+    rig.server.wait_serving(false);
+    step_until(rig, supervisor, t0.after(secs(3)), GatewayState::Starting);
+    let calls = rig.calls();
+    assert_eq!(calls.len(), 2, "respawned exactly once: {calls:?}");
+    assert_eq!(rig.slot().restarts, 0, "an asked-for respawn is no crash");
+    assert_eq!(
+        stub::terms(&rig.dir),
+        [first_pid],
+        "the receiver side: exactly one SIGTERM, not two"
+    );
+    assert_eq!(rig.check_runs(), 1, "the restart is gated on one check");
+}
+
+/// The base `[server]` table every restart-only edit starts from.
+#[cfg(unix)]
+fn base_config(port: u16) -> String {
+    format!("[server]\nbind = \"127.0.0.1:{port}\"\nshutdown_timeout_seconds = 2\n")
+}
+
+/// A restart-only case: `(spawn config, changed config)` over a port.
+#[cfg(unix)]
+type RestartCase = dyn Fn(u16) -> (String, String);
+
+/// `bind = "127.0.0.1:3067"` edited to another host keeps the port, so the
+/// same rig port keeps answering `/health` while the bind fact flips.
+#[cfg(unix)]
+#[test]
+fn a_bind_edit_restarts_once_and_names_the_setting() {
+    let rig = Rig::new("0.49.1");
+    rig.arm_check_stub();
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    let changed = format!(
+        "[server]\nbind = \"0.0.0.0:{}\"\nshutdown_timeout_seconds = 2\n",
+        rig.port
+    );
+    expect_restart(&rig, &mut supervisor, t0, pid, "server.bind", &changed);
+}
+
+/// Losing `[server.admin]` restarts too: the fact is the key's presence in
+/// either direction.
+#[cfg(unix)]
+#[test]
+fn removing_the_admin_table_restarts_once() {
+    let rig = Rig::new("0.49.1");
+    rig.arm_check_stub();
+    fs::write(&rig.config, with_admin_table(&rig)).expect("config");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    expect_restart(
+        &rig,
+        &mut supervisor,
+        t0,
+        pid,
+        "[server.admin]",
+        &base_config(rig.port),
+    );
+}
+
+/// A model's `display_name` is hot-reloadable: editing it never restarts.
+#[cfg(unix)]
+#[test]
+fn a_model_display_name_edit_keeps_the_child() {
+    let rig = Rig::new("0.49.1");
+    fs::write(
+        &rig.config,
+        format!(
+            "[server]\nbind = \"127.0.0.1:{}\"\nshutdown_timeout_seconds = 2\n[[models]]\nid = \"fable\"\ndisplay_name = \"Fable\"\n",
+            rig.port
+        ),
+    )
+    .expect("config");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    fs::write(
+        &rig.config,
+        format!(
+            "[server]\nbind = \"127.0.0.1:{}\"\nshutdown_timeout_seconds = 2\n[[models]]\nid = \"fable\"\ndisplay_name = \"Renamed\"\n",
+            rig.port
+        ),
+    )
+    .expect("config");
+    supervisor.step(t0.after(secs(2)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Healthy,
+        "a display_name edit keeps the child"
+    );
+    assert!(stub::alive(pid), "never stopped for a display_name edit");
+    assert_eq!(rig.calls().len(), 1, "no respawn");
+}
+
+/// A comment added above `bind`, or `bind` moved within `[server]`, compares
+/// as the same value: no restart.
+#[cfg(unix)]
+#[test]
+fn a_comment_or_key_move_above_bind_keeps_the_child() {
+    let rig = Rig::new("0.49.1");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    let reordered = format!(
+        "# a comment above bind\n[server]\nshutdown_timeout_seconds = 2\nbind = \"127.0.0.1:{}\"\n",
+        rig.port
+    );
+    fs::write(&rig.config, reordered).expect("config");
+    supervisor.step(t0.after(secs(2)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Healthy,
+        "a comment and key move keeps the child"
+    );
+    assert!(stub::alive(pid), "never stopped for a comment or key move");
+    assert_eq!(rig.calls().len(), 1, "no respawn");
+}
+
+/// A refused restart-only edit keeps the child, logs the refusal once, and
+/// does not re-run the check while the bytes stay unchanged.
+#[cfg(unix)]
+#[test]
+fn a_refused_bind_edit_keeps_the_child_and_logs_once() {
+    let rig = Rig::new("0.49.1");
+    rig.arm_check_stub();
+    rig.touch("check-fail");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    let changed = format!(
+        "[server]\nbind = \"0.0.0.0:{}\"\nshutdown_timeout_seconds = 2\n",
+        rig.port
+    );
+    fs::write(&rig.config, changed).expect("config");
+    supervisor.step(t0.after(secs(2)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Healthy,
+        "a refused bind edit keeps the child"
+    );
+    assert!(stub::alive(pid), "never stopped for a refused check");
+    assert_eq!(rig.calls().len(), 1, "no respawn on a refused check");
+    assert_eq!(rig.check_runs(), 1, "one check for the changed bind");
+
+    let keep_line = format!(
+        "clauth daemon: the shunt gateway's config changed server.bind, but `{} check --config {}` refused it (exit 1); keeping the running gateway until the check passes; run that command to see why",
+        rig.binary.display(),
+        rig.config.display()
+    );
+    assert_eq!(
+        rig.lines
+            .snapshot()
+            .iter()
+            .filter(|line| **line == keep_line)
+            .count(),
+        1,
+        "the refusal is logged once, naming the setting, never its value"
+    );
+
+    supervisor.step(t0.after(secs(3)));
+    supervisor.step(t0.after(secs(4)));
+    assert_eq!(rig.check_runs(), 1, "an unchanged config is not re-checked");
+    assert_eq!(rig.calls().len(), 1, "still no respawn");
+    assert!(
+        stub::alive(pid),
+        "the child stays alive across memoized rounds"
+    );
+}
+
+/// Every member of the restart-only fact set, in every transition its kind
+/// admits. The transitions are generated from the fact table itself: the
+/// profiles below are cross-checked against `FACT_SPECS` (length, label,
+/// walk, kind) before any transition runs, so a member added, removed,
+/// re-pathed, or re-kinded fails this test instead of drifting.
+#[cfg(unix)]
+#[test]
+fn every_restart_only_setting_restarts_once_when_it_changes() {
+    let profiles = member_profiles();
+    assert_eq!(
+        profiles.len(),
+        FACT_SPECS.len(),
+        "the test profiles drifted from the fact set's length"
+    );
+    for (profile, spec) in profiles.iter().zip(FACT_SPECS.iter()) {
+        assert_eq!(
+            profile.path, spec.path,
+            "a test profile's label drifted from the fact set: {}",
+            spec.path
+        );
+        assert_eq!(
+            profile.keys, spec.keys,
+            "a test profile's walk drifted from the fact set: {}",
+            spec.path
+        );
+        assert_eq!(
+            kind_name(profile.kind),
+            kind_name(spec.kind),
+            "a test profile's kind drifted from the fact set: {}",
+            spec.path
+        );
+    }
+    for profile in &profiles {
+        match profile.kind {
+            FactKind::Value => {
+                // absent -> present, present -> a different value, and back to
+                // absent.
+                restart_case(profile, profile.absent, profile.present_a);
+                restart_case(
+                    profile,
+                    profile.present_a,
+                    profile.present_b.expect("a Value fact carries present_b"),
+                );
+                restart_case(profile, profile.present_a, profile.absent);
+            }
+            FactKind::Present => {
+                // absent -> present and back; a content edit inside the present
+                // table is a keep, covered by the non-member test.
+                restart_case(profile, profile.absent, profile.present_a);
+                restart_case(profile, profile.present_a, profile.absent);
+            }
+            FactKind::NonEmpty => {
+                let empty = profile
+                    .empty
+                    .expect("a NonEmpty fact carries its empty config");
+                // absent -> non-empty, [] -> non-empty, and each back.
+                restart_case(profile, profile.absent, profile.present_a);
+                restart_case(profile, empty, profile.present_a);
+                restart_case(profile, profile.present_a, empty);
+                restart_case(profile, profile.present_a, profile.absent);
+            }
+        }
+    }
+}
+
+/// A restart-only fact's test profile: the fact-table entries it must match,
+/// and the config fragments that drive every transition its kind admits.
+#[cfg(unix)]
+struct MemberProfile {
+    /// The log key path, matched against `FactSpec::path`.
+    path: &'static str,
+    /// The document walk, matched against `FactSpec::keys`.
+    keys: &'static [&'static str],
+    /// The fact kind, matched against `FactSpec::kind`.
+    kind: FactKind,
+    /// The config with the member's key absent.
+    absent: fn(u16) -> String,
+    /// The config with the member present (value A).
+    present_a: fn(u16) -> String,
+    /// The config with the member present (value B, different): a `Value` fact
+    /// only — a `Present` or `NonEmpty` member's content edit is a keep, not a
+    /// restart.
+    present_b: Option<fn(u16) -> String>,
+    /// A `NonEmpty` member's config with the key present but `[]`.
+    empty: Option<fn(u16) -> String>,
+    /// Env-file line(s) pinning the probe port while the config's `bind` key
+    /// is absent, so `server.bind`'s absent <-> present transitions stay
+    /// spawnable (the daemon would otherwise probe shunt's default port).
+    env_pin: Option<fn(u16) -> String>,
+}
+
+/// The fact's kind as a name, so the cross-check compares kinds without a
+/// `PartialEq` derive on `FactKind`.
+#[cfg(unix)]
+fn kind_name(kind: FactKind) -> &'static str {
+    match kind {
+        FactKind::Value => "Value",
+        FactKind::Present => "Present",
+        FactKind::NonEmpty => "NonEmpty",
+    }
+}
+
+/// The test profiles, in the fact set's order.
+#[cfg(unix)]
+fn member_profiles() -> Vec<MemberProfile> {
+    vec![
+        MemberProfile {
+            path: "server.bind",
+            keys: &["server", "bind"],
+            kind: FactKind::Value,
+            absent: |_| "[server]\nshutdown_timeout_seconds = 2\n".to_string(),
+            present_a: base_config,
+            present_b: Some(|p| {
+                format!("[server]\nbind = \"0.0.0.0:{p}\"\nshutdown_timeout_seconds = 2\n")
+            }),
+            empty: None,
+            env_pin: Some(|p| format!("SHUNT_SERVER__BIND=127.0.0.1:{p}")),
+        },
+        MemberProfile {
+            path: "server.max_concurrent_requests",
+            keys: &["server", "max_concurrent_requests"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| format!("{}max_concurrent_requests = 2048\n", base_config(p)),
+            present_b: Some(|p| format!("{}max_concurrent_requests = 4096\n", base_config(p))),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "server.shutdown_timeout_seconds",
+            keys: &["server", "shutdown_timeout_seconds"],
+            kind: FactKind::Value,
+            absent: |p| format!("[server]\nbind = \"127.0.0.1:{p}\"\n"),
+            present_a: base_config,
+            present_b: Some(|p| {
+                format!("[server]\nbind = \"127.0.0.1:{p}\"\nshutdown_timeout_seconds = 3\n")
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.access_control]",
+            keys: &["server", "access_control"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| {
+                format!(
+                    "{}[server.access_control]\nallow_cidrs = [\"10.0.0.0/8\"]\n",
+                    base_config(p)
+                )
+            },
+            present_b: Some(|p| {
+                format!(
+                    "{}[server.access_control]\nallow_cidrs = [\"10.0.0.0/16\"]\n",
+                    base_config(p)
+                )
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "server.limits.max_request_header_bytes",
+            keys: &["server", "limits", "max_request_header_bytes"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| {
+                format!(
+                    "{}[server.limits]\nmax_request_header_bytes = 512\n",
+                    base_config(p)
+                )
+            },
+            present_b: Some(|p| {
+                format!(
+                    "{}[server.limits]\nmax_request_header_bytes = 1024\n",
+                    base_config(p)
+                )
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "server.limits.max_url_length",
+            keys: &["server", "limits", "max_url_length"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| format!("{}[server.limits]\nmax_url_length = 256\n", base_config(p)),
+            present_b: Some(|p| {
+                format!("{}[server.limits]\nmax_url_length = 512\n", base_config(p))
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.rate_limits]",
+            keys: &["server", "rate_limits"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| {
+                format!(
+                    "{}[server.rate_limits.device_verify]\nmax = 3\nwindow_seconds = 20\n",
+                    base_config(p)
+                )
+            },
+            present_b: Some(|p| {
+                format!(
+                    "{}[server.rate_limits.device_verify]\nmax = 5\nwindow_seconds = 20\n",
+                    base_config(p)
+                )
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.admin]",
+            keys: &["server", "admin"],
+            kind: FactKind::Present,
+            absent: base_config,
+            present_a: |p| format!("{}[server.admin]\n", base_config(p)),
+            present_b: None,
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.gateway]",
+            keys: &["server", "gateway"],
+            kind: FactKind::Present,
+            absent: base_config,
+            present_a: |p| format!("{}[server.gateway]\n", base_config(p)),
+            present_b: None,
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.spend]",
+            keys: &["server", "spend"],
+            kind: FactKind::Present,
+            absent: base_config,
+            present_a: |p| format!("{}[server.spend]\n", base_config(p)),
+            present_b: None,
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "server.spend.state_path",
+            keys: &["server", "spend", "state_path"],
+            kind: FactKind::Value,
+            absent: |p| format!("{}[server.spend]\n", base_config(p)),
+            present_a: |p| {
+                format!(
+                    "{}[server.spend]\nstate_path = \"/tmp/spend.json\"\n",
+                    base_config(p)
+                )
+            },
+            present_b: Some(|p| {
+                format!(
+                    "{}[server.spend]\nstate_path = \"/tmp/spend-2.json\"\n",
+                    base_config(p)
+                )
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.codex_endpoint]",
+            keys: &["server", "codex_endpoint"],
+            kind: FactKind::Present,
+            absent: base_config,
+            present_a: |p| format!("{}[server.codex_endpoint]\n", base_config(p)),
+            present_b: None,
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.usage]",
+            keys: &["server", "usage"],
+            kind: FactKind::Present,
+            absent: base_config,
+            present_a: |p| format!("{}[server.usage]\n", base_config(p)),
+            present_b: None,
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.oauth_usage]",
+            keys: &["server", "oauth_usage"],
+            kind: FactKind::Present,
+            absent: base_config,
+            present_a: |p| format!("{}[server.oauth_usage]\n", base_config(p)),
+            present_b: None,
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[sentry]",
+            keys: &["sentry"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| {
+                format!(
+                    "{}[sentry]\ndsn = \"\"\nenvironment = \"dev\"\n",
+                    base_config(p)
+                )
+            },
+            present_b: Some(|p| {
+                format!(
+                    "{}[sentry]\ndsn = \"\"\nenvironment = \"prod\"\n",
+                    base_config(p)
+                )
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[otel]",
+            keys: &["otel"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| {
+                format!(
+                    "{}[otel]\nendpoint = \"http://localhost:4318\"\nsample_ratio = 0.5\n",
+                    base_config(p)
+                )
+            },
+            present_b: Some(|p| {
+                format!(
+                    "{}[otel]\nendpoint = \"http://localhost:4318\"\nsample_ratio = 1.0\n",
+                    base_config(p)
+                )
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "server.pool.usage_refresh_seconds",
+            keys: &["server", "pool", "usage_refresh_seconds"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| {
+                format!(
+                    "{}[server.pool]\nusage_refresh_seconds = 120\n",
+                    base_config(p)
+                )
+            },
+            present_b: Some(|p| {
+                format!(
+                    "{}[server.pool]\nusage_refresh_seconds = 300\n",
+                    base_config(p)
+                )
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "server.pool.state_path",
+            keys: &["server", "pool", "state_path"],
+            kind: FactKind::Value,
+            absent: base_config,
+            present_a: |p| {
+                format!(
+                    "{}[server.pool]\nstate_path = \"/tmp/pool.json\"\n",
+                    base_config(p)
+                )
+            },
+            present_b: Some(|p| {
+                format!(
+                    "{}[server.pool]\nstate_path = \"/tmp/pool-2.json\"\n",
+                    base_config(p)
+                )
+            }),
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.status]",
+            keys: &["server", "status"],
+            kind: FactKind::Present,
+            absent: base_config,
+            present_a: |p| format!("{}[server.status]\n", base_config(p)),
+            present_b: None,
+            empty: None,
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "[server.status].sources",
+            keys: &["server", "status", "sources"],
+            kind: FactKind::NonEmpty,
+            absent: |p| format!("{}[server.status]\n", base_config(p)),
+            present_a: |p| {
+                format!(
+                    "{}[server.status]\n[[server.status.sources]]\nprovider = \"claude\"\nurl = \"https://status.claude.com/api/v2/summary.json\"\n",
+                    base_config(p)
+                )
+            },
+            present_b: None,
+            empty: Some(|p| format!("{}[server.status]\nsources = []\n", base_config(p))),
+            env_pin: None,
+        },
+        MemberProfile {
+            path: "server.status.refresh_seconds",
+            keys: &["server", "status", "refresh_seconds"],
+            kind: FactKind::Value,
+            absent: |p| format!("{}[server.status]\n", base_config(p)),
+            present_a: |p| format!("{}[server.status]\nrefresh_seconds = 120\n", base_config(p)),
+            present_b: Some(|p| {
+                format!("{}[server.status]\nrefresh_seconds = 300\n", base_config(p))
+            }),
+            empty: None,
+            env_pin: None,
+        },
+    ]
+}
+
+/// One restart-only change, driven end to end in a fresh sandbox: spawn on
+/// `spawn(p)`, edit to `changed(p)`, and assert exactly one restart gated on
+/// one check, the stop line naming the profile's key path by equality.
+#[cfg(unix)]
+fn restart_case(profile: &MemberProfile, spawn: fn(u16) -> String, changed: fn(u16) -> String) {
+    let rig = Rig::new("0.49.1");
+    rig.arm_check_stub();
+    if let Some(pin) = profile.env_pin {
+        fs::write(
+            &rig.env_file,
+            format!("GATEWAY_TEST_SECRET=from-env-file\n{}\n", pin(rig.port)),
+        )
+        .expect("env pin");
+    }
+    let spawn_config = spawn(rig.port);
+    fs::write(&rig.config, spawn_config).expect("spawn config");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Healthy,
+        "{}: spawns healthy",
+        profile.path
+    );
+    let first = rig.only_call().pid;
+    let changed_config = changed(rig.port);
+    expect_restart(
+        &rig,
+        &mut supervisor,
+        t0,
+        first,
+        profile.path,
+        &changed_config,
+    );
+}
+
+/// Representative hot-reloadable non-members: editing them never restarts.
+#[cfg(unix)]
+#[test]
+fn hot_reloadable_settings_never_restart_the_child() {
+    let rig = Rig::new("0.49.1");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    let base = base_config(rig.port);
+    let edits: Vec<(&str, String)> = vec![
+        (
+            "an [[upstreams]] field",
+            format!(
+                "{base}[[upstreams]]\nname = \"u\"\nkind = \"anthropic\"\nbase_url = \"https://api.anthropic.com\"\n"
+            ),
+        ),
+        (
+            "[[models]]",
+            format!("{base}[[models]]\nid = \"fable\"\ndisplay_name = \"Fable\"\n"),
+        ),
+        (
+            "[[routes]]",
+            format!("{base}[[routes]]\nmodel = \"fable\"\n"),
+        ),
+        ("[server.auth]", format!("{base}[server.auth]\n")),
+        (
+            "[server.pool].hard_threshold",
+            format!("{base}[server.pool]\nhard_threshold = 0.9\n"),
+        ),
+    ];
+    for (name, changed) in edits {
+        fs::write(&rig.config, changed).expect("config");
+        supervisor.step(t0.after(secs(2)));
+        assert_eq!(
+            rig.slot().state,
+            GatewayState::Healthy,
+            "{name} keeps the child"
+        );
+        assert!(stub::alive(pid), "{name} never stops the child");
+    }
+    assert_eq!(
+        rig.calls().len(),
+        1,
+        "no respawn for any hot-reloadable edit"
+    );
+}
+
+/// One hot-reloadable edit inside a present restart-only table, driven end to
+/// end in a fresh sandbox: spawn on `spawn_config`, edit to `changed_config`,
+/// and assert no restart and no check.
+#[cfg(unix)]
+fn keep_case(name: &str, case: &RestartCase) {
+    let rig = Rig::new("0.49.1");
+    let (spawn_config, changed_config) = case(rig.port);
+    fs::write(&rig.config, spawn_config).expect("spawn config");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Healthy,
+        "{name}: spawns healthy"
+    );
+    let pid = rig.only_call().pid;
+
+    fs::write(&rig.config, changed_config).expect("config");
+    supervisor.step(t0.after(secs(2)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Healthy,
+        "{name} keeps the child"
+    );
+    assert!(stub::alive(pid), "{name} never stops the child");
+    assert_eq!(rig.calls().len(), 1, "no respawn for {name}");
+}
+
+/// A non-member sibling inside a restart-only table hot-reloads: editing it
+/// never restarts the child, even while the member table is present.
+#[cfg(unix)]
+#[test]
+fn a_non_member_edit_inside_a_member_table_keeps_the_child() {
+    // One keep case per member table: a sibling or content edit that leaves
+    // every fact inside it unchanged. `[server.usage]` and `[server.oauth_usage]`
+    // have no fields of their own, so an arbitrary key stands in for their
+    // content (presence alone is the fact).
+    let cases: Vec<(&str, Box<RestartCase>)> = vec![
+        (
+            "[server] sse_keepalive_seconds beside the bind facts",
+            Box::new(|p| {
+                (
+                    format!("{}sse_keepalive_seconds = 60\n", base_config(p)),
+                    format!("{}sse_keepalive_seconds = 61\n", base_config(p)),
+                )
+            }),
+        ),
+        (
+            "a [[server.admin.write_keys]] edit under a present table",
+            Box::new(|p| {
+                (
+                    format!(
+                        "{}[server.admin]\n[[server.admin.write_keys]]\nid = \"clauth\"\nkey = \"first\"\n",
+                        base_config(p)
+                    ),
+                    format!(
+                        "{}[server.admin]\n[[server.admin.write_keys]]\nid = \"clauth\"\nkey = \"second\"\n",
+                        base_config(p)
+                    ),
+                )
+            }),
+        ),
+        (
+            "[server.limits] max_request_bytes",
+            Box::new(|p| {
+                (
+                    format!(
+                        "{}[server.limits]\nmax_request_bytes = 1000\n",
+                        base_config(p)
+                    ),
+                    format!(
+                        "{}[server.limits]\nmax_request_bytes = 2000\n",
+                        base_config(p)
+                    ),
+                )
+            }),
+        ),
+        (
+            "[server.spend] blocked_message",
+            Box::new(|p| {
+                (
+                    format!(
+                        "{}[server.spend]\nblocked_message = \"nope\"\n",
+                        base_config(p)
+                    ),
+                    format!(
+                        "{}[server.spend]\nblocked_message = \"denied\"\n",
+                        base_config(p)
+                    ),
+                )
+            }),
+        ),
+        (
+            "[server.pool] hard_threshold beside usage_refresh_seconds",
+            Box::new(|p| {
+                (
+                    format!(
+                        "{}[server.pool]\nusage_refresh_seconds = 120\nhard_threshold = 0.9\n",
+                        base_config(p)
+                    ),
+                    format!(
+                        "{}[server.pool]\nusage_refresh_seconds = 120\nhard_threshold = 0.95\n",
+                        base_config(p)
+                    ),
+                )
+            }),
+        ),
+        (
+            "[server.gateway] trust_forwarded_for",
+            Box::new(|p| {
+                (
+                    format!(
+                        "{}[server.gateway]\ntrust_forwarded_for = true\n",
+                        base_config(p)
+                    ),
+                    format!(
+                        "{}[server.gateway]\ntrust_forwarded_for = false\n",
+                        base_config(p)
+                    ),
+                )
+            }),
+        ),
+        (
+            "[server.codex_endpoint] provider",
+            Box::new(|p| {
+                (
+                    format!(
+                        "{}[server.codex_endpoint]\nprovider = \"codex\"\n",
+                        base_config(p)
+                    ),
+                    format!(
+                        "{}[server.codex_endpoint]\nprovider = \"other\"\n",
+                        base_config(p)
+                    ),
+                )
+            }),
+        ),
+        (
+            "[server.usage] a field",
+            Box::new(|p| {
+                (
+                    format!("{}[server.usage]\nnote = \"a\"\n", base_config(p)),
+                    format!("{}[server.usage]\nnote = \"b\"\n", base_config(p)),
+                )
+            }),
+        ),
+        (
+            "[server.oauth_usage] a field",
+            Box::new(|p| {
+                (
+                    format!("{}[server.oauth_usage]\nnote = \"a\"\n", base_config(p)),
+                    format!("{}[server.oauth_usage]\nnote = \"b\"\n", base_config(p)),
+                )
+            }),
+        ),
+        (
+            "a [[server.status.sources]] URL edit with the list non-empty",
+            Box::new(|p| {
+                (
+                    format!(
+                        "{}[server.status]\n[[server.status.sources]]\nprovider = \"claude\"\nurl = \"https://status.claude.com/api/v2/summary.json\"\n",
+                        base_config(p)
+                    ),
+                    format!(
+                        "{}[server.status]\n[[server.status.sources]]\nprovider = \"claude\"\nurl = \"https://status.anthropic.com/api/v2/summary.json\"\n",
+                        base_config(p)
+                    ),
+                )
+            }),
+        ),
+        (
+            "[server.status] sources absent -> sources = [] (shunt starts no poller either way)",
+            Box::new(|p| {
+                (
+                    format!("{}[server.status]\nrefresh_seconds = 300\n", base_config(p)),
+                    format!(
+                        "{}[server.status]\nrefresh_seconds = 300\nsources = []\n",
+                        base_config(p)
+                    ),
+                )
+            }),
+        ),
+        (
+            "[server.status] sources = [] -> absent",
+            Box::new(|p| {
+                (
+                    format!(
+                        "{}[server.status]\nrefresh_seconds = 300\nsources = []\n",
+                        base_config(p)
+                    ),
+                    format!("{}[server.status]\nrefresh_seconds = 300\n", base_config(p)),
+                )
+            }),
+        ),
+    ];
+    for (name, case) in &cases {
+        keep_case(name, case.as_ref());
+    }
+}
+
+/// Changing two restart-only members at once names both key paths in fact-set
+/// order, comma-separated.
+#[cfg(unix)]
+#[test]
+fn a_two_setting_edit_names_both_key_paths_in_order() {
+    let rig = Rig::new("0.49.1");
+    rig.arm_check_stub();
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    let changed = format!(
+        "[server]\nbind = \"0.0.0.0:{}\"\nshutdown_timeout_seconds = 2\n[server.admin]\n",
+        rig.port
+    );
+    expect_restart(
+        &rig,
+        &mut supervisor,
+        t0,
+        pid,
+        "server.bind, [server.admin]",
+        &changed,
+    );
+}
+
+/// A child whose spawn-time read failed (a fact path crossed a non-table)
+/// adopts the first readable round's facts as its baseline, logged once, and
+/// then restarts on a later change like any other child.
+#[cfg(unix)]
+#[test]
+fn a_child_whose_spawn_read_failed_adopts_the_first_readable_round_then_restarts_on_a_change() {
+    let rig = Rig::new("0.49.1");
+    rig.arm_check_stub();
+    fs::write(
+        &rig.config,
+        format!(
+            "[server]\nbind = \"127.0.0.1:{}\"\nshutdown_timeout_seconds = 2\nlimits = \"not-a-table\"\n",
+            rig.port
+        ),
+    )
+    .expect("config");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    // The first readable round adopts its facts as the baseline, logged once.
+    fs::write(&rig.config, base_config(rig.port)).expect("config");
+    supervisor.step(t0.after(secs(2)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Healthy,
+        "adopting the baseline never restarts"
+    );
+    assert!(stub::alive(pid), "no stop while adopting the baseline");
+    assert_eq!(
+        rig.calls().len(),
+        1,
+        "no respawn while adopting the baseline"
+    );
+    assert_eq!(
+        rig.check_runs(),
+        0,
+        "no check runs while adopting the baseline"
+    );
+    let adopt_line = "clauth daemon: the shunt gateway's config could not be read at spawn; adopting the current config as its restart baseline";
+    assert_eq!(
+        rig.lines
+            .snapshot()
+            .iter()
+            .filter(|line| **line == adopt_line)
+            .count(),
+        1,
+        "the adoption is logged once"
+    );
+
+    // A later change restarts like any other child.
+    let changed = format!(
+        "[server]\nbind = \"0.0.0.0:{}\"\nshutdown_timeout_seconds = 2\n",
+        rig.port
+    );
+    expect_restart(
+        &rig,
+        &mut supervisor,
+        t0.after(secs(2)),
+        pid,
+        "server.bind",
+        &changed,
+    );
+}
+
+/// A config whose `[sentry]` subtree holds `nan` compares equal to itself
+/// round after round (the mark holds a digest, never the raw value): an
+/// unchanged round never restarts.
+#[cfg(unix)]
+#[test]
+fn a_config_holding_nan_in_a_value_fact_does_not_restart_on_an_unchanged_round() {
+    let rig = Rig::new("0.49.1");
+    rig.arm_check_stub();
+    fs::write(
+        &rig.config,
+        format!(
+            "{}[sentry]\ndsn = \"\"\ntraces_sample_rate = nan\n",
+            base_config(rig.port)
+        ),
+    )
+    .expect("config");
+    let mut supervisor = rig.supervisor();
+    let t0 = t0();
+    supervisor.step(t0);
+    rig.server.wait_serving(true);
+    supervisor.step(t0.after(secs(1)));
+    assert_eq!(rig.slot().state, GatewayState::Healthy);
+    let pid = rig.only_call().pid;
+
+    // The config is untouched: a NaN value fact must not read as changed.
+    supervisor.step(t0.after(secs(2)));
+    assert_eq!(
+        rig.slot().state,
+        GatewayState::Healthy,
+        "an unchanged NaN fact never restarts"
+    );
+    assert!(
+        stub::alive(pid),
+        "the child stays alive across unchanged rounds"
+    );
+    assert_eq!(rig.calls().len(), 1, "no respawn on an unchanged NaN fact");
+    assert_eq!(
+        rig.check_runs(),
+        0,
+        "no check runs on an unchanged NaN fact"
+    );
 }
 
 /// The stop bound is the drain shunt runs with plus its 5 s blocking grace and

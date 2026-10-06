@@ -344,6 +344,7 @@ impl Supervised for Proxy {
     type Record = ProxyRecord;
     type Probe = ProxyProbe;
     type Prepared = Manifest;
+    type SpawnMark = ();
 
     fn publish(&self, handle: &ProxySlots, slot: ProxySlot) {
         match handle.lock() {
