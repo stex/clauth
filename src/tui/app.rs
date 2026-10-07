@@ -957,6 +957,7 @@ pub(crate) struct PresetPickerForm {
     pub(crate) target: String,
     pub(crate) presets: Vec<crate::presets::Preset>,
     pub(crate) cursor: usize,
+    pub(crate) scroll: std::cell::Cell<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -983,6 +984,7 @@ pub(crate) struct DivergenceForm {
     /// known account, which the generic three options all get wrong.
     pub(crate) sibling: Option<ProfileName>,
     pub(crate) cursor: usize,
+    pub(crate) scroll: std::cell::Cell<usize>,
 }
 
 /// The non-blocking divergence signal behind the accounts-pane banner: set by
@@ -1053,6 +1055,7 @@ impl DivergenceForm {
 pub(crate) struct DivergenceTargetForm {
     pub(crate) targets: Vec<String>,
     pub(crate) cursor: usize,
+    pub(crate) scroll: std::cell::Cell<usize>,
 }
 
 /// A choice on the env-key collision prompt (3 vertical options).
@@ -1079,6 +1082,11 @@ pub(crate) struct EnvCollisionForm {
     /// Sorted `EnvEntry` index of the colliding own-field, for `keep existing`.
     pub(crate) existing_idx: Option<usize>,
     pub(crate) cursor: usize,
+    pub(crate) scroll: std::cell::Cell<usize>,
+    pub(crate) reviewing_overwrite: bool,
+    pub(crate) confirm_overwrite: bool,
+    pub(crate) max_scroll: std::cell::Cell<u16>,
+    pub(crate) overwrite_needs_review: std::cell::Cell<bool>,
 }
 
 impl EnvCollisionForm {
@@ -1181,6 +1189,7 @@ pub(crate) struct ActionMenuState {
     /// on a menu of tab-global actions would claim a scope that isn't there.
     pub(crate) context: Option<String>,
     pub(crate) cursor: usize,
+    pub(crate) scroll: std::cell::Cell<usize>,
 }
 
 impl ActionMenuState {
@@ -1226,6 +1235,7 @@ impl ActionMenuState {
             scoped_len,
             context,
             cursor: 0,
+            scroll: std::cell::Cell::new(0),
         }
     }
 }
@@ -7392,6 +7402,7 @@ fn open_divergence_modal(app: &mut App, active: &str) {
         active: active.to_string(),
         sibling,
         cursor: 0,
+        scroll: std::cell::Cell::new(0),
     }));
 }
 
@@ -11676,6 +11687,11 @@ fn env_collision_form(
         existing_idx,
         // Default to the safe choice (cancel), per the modal cancel-default rule.
         cursor: EnvCollisionForm::options().len() - 1,
+        scroll: std::cell::Cell::new(0),
+        reviewing_overwrite: false,
+        confirm_overwrite: false,
+        max_scroll: std::cell::Cell::new(0),
+        overwrite_needs_review: std::cell::Cell::new(false),
     }
 }
 
@@ -11683,6 +11699,55 @@ fn handle_env_collision_key(app: &mut App, key: KeyEvent) {
     let Some(Modal::EnvCollision(state)) = app.modals.last_mut() else {
         return;
     };
+    if state.reviewing_overwrite {
+        match key.code {
+            KeyCode::Up => {
+                state.scroll.set(
+                    state
+                        .scroll
+                        .get()
+                        .min(state.max_scroll.get() as usize)
+                        .saturating_sub(1),
+                );
+            }
+            KeyCode::Down => {
+                state.scroll.set(
+                    state
+                        .scroll
+                        .get()
+                        .saturating_add(1)
+                        .min(state.max_scroll.get() as usize),
+                );
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                state.confirm_overwrite = !state.confirm_overwrite;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                state.reviewing_overwrite = false;
+                state.confirm_overwrite = false;
+                state.scroll.set(0);
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if state.confirm_overwrite {
+                    let name = ProfileName::from(state.profile.clone());
+                    let pending = state.key.clone();
+                    app.modals.pop();
+                    run_env_collision_choice(
+                        app,
+                        &name,
+                        &pending,
+                        None,
+                        EnvCollisionChoice::Overwrite,
+                    );
+                } else {
+                    state.reviewing_overwrite = false;
+                    state.scroll.set(0);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
     let last = EnvCollisionForm::options().len() - 1;
     match key.code {
         KeyCode::Up => {
@@ -11704,6 +11769,12 @@ fn handle_env_collision_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
             let choice = EnvCollisionForm::options()[state.cursor.min(last)];
+            if choice == EnvCollisionChoice::Overwrite && state.overwrite_needs_review.get() {
+                state.reviewing_overwrite = true;
+                state.confirm_overwrite = false;
+                state.scroll.set(0);
+                return;
+            }
             let name = ProfileName::from(state.profile.clone());
             let pending = state.key.clone();
             let existing_idx = state.existing_idx;
@@ -12082,6 +12153,7 @@ fn open_preset_picker(app: &mut App) {
         target,
         presets: crate::presets::list_presets(),
         cursor: 0,
+        scroll: std::cell::Cell::new(0),
     }));
 }
 
@@ -12990,6 +13062,7 @@ fn open_divergence_target_picker(app: &mut App) {
         .push(Modal::DivergenceTarget(DivergenceTargetForm {
             targets,
             cursor: preselect,
+            scroll: std::cell::Cell::new(0),
         }));
 }
 

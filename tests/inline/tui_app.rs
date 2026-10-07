@@ -9588,6 +9588,132 @@ mod env_editor {
     }
 
     #[test]
+    fn inherited_settings_collision_writes_only_after_explicit_confirmation() {
+        let _home = HomeSandbox::new();
+        let key = "ENDPOINT";
+        let name = crate::profile::ProfileName::from("acct");
+        let profile = Profile::new("acct".to_string(), None, None);
+        crate::profile::save_profile(&profile).expect("seed account");
+        let settings_path = crate::profile::claude_dir()
+            .expect("claude dir")
+            .join("settings.json");
+        crate::profile::atomic_write(&settings_path, "{\"env\":{\"ENDPOINT\":\"inherited\"}}")
+            .expect("seed inherited env");
+        let mut app = App::new(AppConfig {
+            state: AppState::default(),
+            profiles: vec![profile],
+        });
+        enter_detail(&mut app);
+        if let Some(draft) = app.config_draft.as_mut() {
+            draft.env_new_key = InputState::new(key);
+            draft.active = Some(ConfigRow::EnvAdd);
+        }
+        let profile_path =
+            crate::profile::profile_subpath(&name, "config.toml").expect("profile path");
+        let before = std::fs::read(&profile_path).expect("read seeded profile");
+        assert_eq!(app.config().find(&name).and_then(|p| p.env.get(key)), None);
+        super::super::commit_env_new_key(&mut app);
+        assert!(
+            matches!(app.modals.last(), Some(Modal::EnvCollision(form)) if form.reason == "your ~/.claude/settings.json")
+        );
+        assert_eq!(app.config().find(&name).and_then(|p| p.env.get(key)), None);
+        assert_eq!(
+            std::fs::read(&settings_path).expect("read settings"),
+            b"{\"env\":{\"ENDPOINT\":\"inherited\"}}"
+        );
+        assert_eq!(std::fs::read(&profile_path).expect("read profile"), before);
+
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Up));
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Up));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 14)).expect("backend");
+        terminal
+            .draw(|frame| crate::tui::render::draw(frame, &app))
+            .expect("render choice");
+        assert!(
+            matches!(app.modals.last(), Some(Modal::EnvCollision(form)) if form.overwrite_needs_review.get())
+        );
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        assert!(
+            matches!(app.modals.last(), Some(Modal::EnvCollision(form)) if form.reviewing_overwrite && !form.confirm_overwrite)
+        );
+        assert_eq!(std::fs::read(&profile_path).expect("read profile"), before);
+        assert_eq!(
+            std::fs::read(&settings_path).expect("read settings"),
+            b"{\"env\":{\"ENDPOINT\":\"inherited\"}}"
+        );
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        assert!(
+            matches!(app.modals.last(), Some(Modal::EnvCollision(form)) if !form.reviewing_overwrite)
+        );
+        assert_eq!(std::fs::read(&profile_path).expect("read profile"), before);
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Esc));
+        assert!(
+            matches!(app.modals.last(), Some(Modal::EnvCollision(form)) if !form.reviewing_overwrite)
+        );
+        assert_eq!(std::fs::read(&profile_path).expect("read profile"), before);
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Right));
+        assert_eq!(std::fs::read(&profile_path).expect("read profile"), before);
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        assert!(
+            app.modals.is_empty(),
+            "explicit affirmative closes the prompt"
+        );
+        assert_eq!(
+            app.config()
+                .find(&name)
+                .and_then(|p| p.env.get(key))
+                .map(String::as_str),
+            Some("")
+        );
+        assert_ne!(std::fs::read(&profile_path).expect("read profile"), before);
+        assert_eq!(
+            std::fs::read(&settings_path).expect("read settings"),
+            b"{\"env\":{\"ENDPOINT\":\"inherited\"}}"
+        );
+    }
+
+    #[test]
+    fn fitting_managed_collision_adds_without_a_second_confirmation() {
+        let _home = HomeSandbox::new();
+        let mut app = app_with_env(BTreeMap::new());
+        enter_detail(&mut app);
+        let key = "ANTHROPIC_BASE_URL";
+        if let Some(draft) = app.config_draft.as_mut() {
+            draft.env_new_key = InputState::new(key);
+            draft.active = Some(ConfigRow::EnvAdd);
+        }
+        super::super::commit_env_new_key(&mut app);
+        assert!(matches!(app.modals.last(), Some(Modal::EnvCollision(_))));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).expect("backend");
+        terminal
+            .draw(|frame| crate::tui::render::draw(frame, &app))
+            .expect("render fitting choice");
+        assert!(
+            matches!(app.modals.last(), Some(Modal::EnvCollision(form)) if !form.overwrite_needs_review.get())
+        );
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Up));
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Up));
+        assert_eq!(
+            app.config()
+                .find(&crate::profile::ProfileName::from("acct"))
+                .and_then(|p| p.env.get(key).cloned()),
+            None
+        );
+        super::super::handle_modal_key(&mut app, crate::testutil::key(KeyCode::Enter));
+        assert!(app.modals.is_empty());
+        assert_eq!(
+            app.config()
+                .find(&crate::profile::ProfileName::from("acct"))
+                .and_then(|p| p.env.get(key).cloned()),
+            Some(String::new())
+        );
+    }
+
+    #[test]
     fn add_field_with_fresh_key_inserts_and_edits_value() {
         let _home = HomeSandbox::new();
         let mut app = app_with_env(BTreeMap::new());

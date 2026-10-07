@@ -21,8 +21,8 @@ use super::format::spinner_frame;
 use super::overview::switch_mark;
 use super::panes::{
     DIAG_AUTH_BROKEN, DIAG_BUDGET_SPENT, DIAG_CANCELED, DIAG_DISABLED, DIAG_KEY_REJECTED,
-    DIAG_KICK, DIAG_STALE, DIAG_WEEKLY_SOFT, DIAG_WEEKLY_SPENT, bold_when, draw_scrolled_lines,
-    head_cols, key_cell, meta_line,
+    DIAG_KICK, DIAG_STALE, DIAG_WEEKLY_SOFT, DIAG_WEEKLY_SPENT, bold_when, draw_scrollbar,
+    draw_scrolled_lines, follow_scroll_offset, head_cols, key_cell, meta_line,
 };
 use super::prose::{self, cmd_lit, key_lit};
 use crate::fallback::BlockedReason;
@@ -113,7 +113,15 @@ fn draw_login_progress(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         lines.pop();
     }
-    draw_modal_scrolled(frame, area, "LOGIN", lines, 0, caret);
+    draw_modal_scrolled(
+        frame,
+        area,
+        "LOGIN",
+        lines,
+        0,
+        None,
+        caret.map(|(row, col)| ModalExtra::Caret(row, col)),
+    );
 }
 
 /// The login modal's code field, in place of the `p  paste code` row: an edit
@@ -152,7 +160,18 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 /// tail. On any terminal wide enough for the content nothing splits and the
 /// modal renders exactly as before.
 fn draw_modal(frame: &mut Frame<'_>, area: Rect, title: &str, lines: Vec<Line<'_>>) {
-    draw_modal_scrolled(frame, area, title, lines, 0, None);
+    draw_modal_scrolled(frame, area, title, lines, 0, None, None);
+}
+
+fn draw_modal_focused(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    lines: Vec<Line<'_>>,
+    focus: std::ops::Range<usize>,
+    saved: &std::cell::Cell<usize>,
+) {
+    draw_modal_scrolled(frame, area, title, lines, 0, Some((focus, saved)), None);
 }
 
 /// [`draw_modal`] with the content scrolled to start at row `scroll`, returning
@@ -170,29 +189,58 @@ fn draw_modal(frame: &mut Frame<'_>, area: Rect, title: &str, lines: Vec<Line<'_
 /// itself — "keep rows `scroll..scroll + viewport` on screen" — which resolves
 /// to exactly `scroll` once clamped. A modal that fits scrolls by 0 and draws
 /// no bar, so it renders as before.
+enum ModalExtra<'a> {
+    Caret(usize, usize),
+    Buttons(Line<'a>),
+}
+
 fn draw_modal_scrolled(
     frame: &mut Frame<'_>,
     area: Rect,
     title: &str,
     lines: Vec<Line<'_>>,
     scroll: u16,
-    caret: Option<(usize, usize)>,
+    focus: Option<(std::ops::Range<usize>, &std::cell::Cell<usize>)>,
+    extra: Option<ModalExtra<'_>>,
 ) -> u16 {
     let content_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-    let w = (content_w + 6)
+    let button_w = match &extra {
+        Some(ModalExtra::Buttons(buttons)) => buttons.width() as u16,
+        _ => 0,
+    };
+    let w = (content_w.max(button_w) + 6)
         .max(title.chars().count() as u16 + 4)
         .min(area.width.saturating_sub(4));
     let inner_w = (w.saturating_sub(6) as usize).max(1);
+    let line_count = lines.len();
     let mut caret_row = None;
+    let mut focus_rows = (0, 0);
     let mut rows: Vec<Line<'static>> = Vec::new();
     for (i, line) in lines.into_iter().enumerate() {
-        if caret.is_some_and(|(at, _)| at == i) {
+        if matches!(extra, Some(ModalExtra::Caret(at, _)) if at == i) {
             caret_row = Some(rows.len());
+        }
+        if focus.as_ref().is_some_and(|(range, _)| range.start == i) {
+            focus_rows.0 = rows.len();
+        }
+        if focus.as_ref().is_some_and(|(range, _)| range.end == i) {
+            focus_rows.1 = rows.len();
         }
         rows.extend(chunk_line(line, inner_w));
     }
+    if focus
+        .as_ref()
+        .is_some_and(|(range, _)| range.end >= line_count)
+    {
+        focus_rows.1 = rows.len();
+    }
     let lines = rows;
-    let h = (lines.len() as u16 + 4).min(area.height.saturating_sub(4));
+    let button_rows = match &extra {
+        Some(ModalExtra::Buttons(buttons)) if buttons.width() > inner_w => 3,
+        Some(ModalExtra::Buttons(_)) => 2,
+        _ => 0,
+    };
+    let h = (lines.len() as u16 + 4 + button_rows).min(area.height.saturating_sub(4));
 
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
@@ -200,7 +248,7 @@ fn draw_modal_scrolled(
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let viewport = inner.height as usize;
+    let viewport = inner.height.saturating_sub(button_rows) as usize;
     // A terminal short enough to leave no inner rows at all draws nothing, and
     // `total - 0` would publish the whole content as a reachable offset.
     let max_scroll = if viewport == 0 {
@@ -208,9 +256,49 @@ fn draw_modal_scrolled(
     } else {
         lines.len().saturating_sub(viewport).min(u16::MAX as usize) as u16
     };
-    let scroll = scroll.min(max_scroll) as usize;
-    draw_scrolled_lines(frame, inner, lines, (scroll, scroll + viewport), None);
-    if let (Some((_, cell)), Some(row)) = (caret, caret_row) {
+    let scroll = if let Some((_, saved)) = focus {
+        let offset = follow_scroll_offset(lines.len(), viewport, focus_rows, saved.get());
+        saved.set(offset);
+        offset
+    } else {
+        scroll.min(max_scroll) as usize
+    };
+    let body = Rect {
+        height: viewport as u16,
+        ..inner
+    };
+    draw_scrolled_lines(frame, body, lines, (scroll, scroll + viewport), None);
+    if let Some(ModalExtra::Buttons(buttons)) = &extra {
+        let button_area = Rect {
+            y: inner.y + inner.height.saturating_sub(button_rows.saturating_sub(1)),
+            height: button_rows.saturating_sub(1),
+            ..inner
+        };
+        if buttons.width() > inner_w {
+            // No button widget can stack the choice while keeping each complete on a narrow screen.
+            let [cancel, _, add] = &buttons.spans[..] else {
+                unreachable!("a choice always has cancel, gap, and affirmative spans");
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(cancel.clone()).alignment(Alignment::Right)),
+                Rect {
+                    height: 1,
+                    ..button_area
+                },
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(add.clone()).alignment(Alignment::Right)),
+                Rect {
+                    y: button_area.y + 1,
+                    height: 1,
+                    ..button_area
+                },
+            );
+        } else {
+            frame.render_widget(Paragraph::new(buttons.clone()), button_area);
+        }
+    }
+    if let (Some(ModalExtra::Caret(_, cell)), Some(row)) = (extra, caret_row) {
         // A caret right after a row's last cell stays on that row, in the
         // right padding, rather than folding onto a row the chunking never
         // made: a content-sized modal is exactly as wide as its widest line,
@@ -379,18 +467,23 @@ fn draw_confirm(frame: &mut Frame<'_>, area: Rect, state: &ConfirmState) {
     let buttons = if matches!(state.on_confirm, ConfirmAction::Acknowledge) {
         Line::from(modal_button(" ok ", true))
     } else {
-        choice_buttons(state.choice, destructive, &confirm_label)
+        choice_buttons(state.choice, destructive, &confirm_label, "   ")
     };
     lines.push(buttons.alignment(Alignment::Right));
 
     draw_modal(frame, area, title, lines);
 }
 
-fn choice_buttons(choice: bool, destructive_confirm: bool, confirm_label: &str) -> Line<'static> {
+fn choice_buttons(
+    choice: bool,
+    destructive_confirm: bool,
+    confirm_label: &str,
+    gap: &'static str,
+) -> Line<'static> {
     let label = format!(" {confirm_label} ");
     Line::from(vec![
         modal_button(" cancel ", !choice),
-        Span::raw("   "),
+        Span::raw(gap),
         if destructive_confirm {
             danger_button(&label, choice)
         } else {
@@ -455,7 +548,15 @@ fn draw_divergence(frame: &mut Frame<'_>, area: Rect, form: &DivergenceForm) {
         ));
     }
 
-    draw_modal(frame, area, "DIVERGENCE", lines);
+    let first = lines.len() - actions.len();
+    draw_modal_focused(
+        frame,
+        area,
+        "DIVERGENCE",
+        lines,
+        first + cursor..first + cursor + 1,
+        &form.scroll,
+    );
 }
 
 fn divergence_action_text(action: &DivergenceAction, active: &str) -> String {
@@ -503,10 +604,42 @@ fn draw_divergence_target(frame: &mut Frame<'_>, area: Rect, form: &DivergenceTa
         lines.push(option_line(cursor == i + 1, format!("overwrite '{name}'")));
     }
 
-    draw_modal(frame, area, "SAVE LOGIN", lines);
+    draw_modal_focused(
+        frame,
+        area,
+        "SAVE LOGIN",
+        lines,
+        cursor + 2..cursor + 3,
+        &form.scroll,
+    );
 }
 
 fn draw_env_collision(frame: &mut Frame<'_>, area: Rect, form: &EnvCollisionForm) {
+    if form.reviewing_overwrite {
+        let (_, consequence) = env_collision_option_text(EnvCollisionChoice::Overwrite, form);
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("add '{}' to '{}' ?", form.key, form.profile),
+                theme::body(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(consequence, theme::dim())),
+        ];
+        // Ratatui has no button-group widget; keep the decision outside the scrolling prose.
+        form.max_scroll.set(draw_modal_scrolled(
+            frame,
+            area,
+            "CONFIRM",
+            lines,
+            form.scroll.get().min(u16::MAX as usize) as u16,
+            None,
+            Some(ModalExtra::Buttons(
+                choice_buttons(form.confirm_overwrite, true, "add", " ")
+                    .alignment(Alignment::Right),
+            )),
+        ));
+        return;
+    }
     let options = EnvCollisionForm::options();
     let cursor = form.cursor.min(options.len() - 1);
 
@@ -543,7 +676,26 @@ fn draw_env_collision(frame: &mut Frame<'_>, area: Rect, form: &EnvCollisionForm
         ]));
     }
 
-    draw_modal(frame, area, "KEY IN USE", lines);
+    let content_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let width = (content_w + 6)
+        .max("KEY IN USE".len() as u16 + 4)
+        .min(area.width.saturating_sub(4));
+    let inner_w = width.saturating_sub(6).max(1) as usize;
+    let viewport = area.height.saturating_sub(8) as usize;
+    let selected_rows = lines[2..4]
+        .iter()
+        .map(|line| chunk_line(line.clone(), inner_w).len())
+        .sum::<usize>();
+    form.overwrite_needs_review
+        .set(selected_rows > viewport && cursor == 0);
+    draw_modal_focused(
+        frame,
+        area,
+        "KEY IN USE",
+        lines,
+        2 + cursor * 2..4 + cursor * 2,
+        &form.scroll,
+    );
 }
 
 fn env_collision_option_text(
@@ -654,7 +806,14 @@ fn draw_preset_picker(frame: &mut Frame<'_>, area: Rect, form: &PresetPickerForm
         theme::dim(),
     )));
 
-    draw_modal(frame, area, "PRESET", lines);
+    draw_modal_focused(
+        frame,
+        area,
+        "PRESET",
+        lines,
+        2 + cursor..3 + cursor,
+        &form.scroll,
+    );
 }
 
 /// Per-tab rows for the KEYS help modal, beneath the shared `tabs`/`global`
@@ -970,6 +1129,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         lines,
         app.help_scroll,
         None,
+        None,
     ));
 }
 
@@ -1150,9 +1310,18 @@ fn draw_action_menu(frame: &mut Frame<'_>, area: Rect, state: &ActionMenuState) 
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
+    let inner_w = inner.width;
+    let total = state.items.len() + usize::from(rule_at.is_some());
+    let viewport = inner.height as usize;
+    let selected = state.cursor.min(state.items.len().saturating_sub(1));
+    let focus = selected + usize::from(rule_at.is_some_and(|at| selected >= at as usize));
+    let offset = follow_scroll_offset(total, viewport, (focus, focus + 1), state.scroll.get());
+    state.scroll.set(offset);
+    draw_scrollbar(frame, inner, total, offset, viewport);
     if let Some(at) = rule_at {
-        let y = inner.y + at;
-        if y < inner.y + inner.height {
+        let y = (at as usize).saturating_sub(offset);
+        if (at as usize) >= offset && y < viewport {
+            let y = inner.y + y as u16;
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     "─".repeat(inner.width as usize),
@@ -1168,15 +1337,15 @@ fn draw_action_menu(frame: &mut Frame<'_>, area: Rect, state: &ActionMenuState) 
         }
     }
 
-    let inner_w = inner.width;
     for (i, item) in state.items.iter().enumerate() {
         let focused = i == state.cursor;
         // Rows below the rule sit one further down; the cursor never lands on
         // it, so `items` stays the only index anything else needs.
-        let y = inner.y + i as u16 + u16::from(rule_at.is_some_and(|at| i as u16 >= at));
-        if y >= inner.y + inner.height {
-            break;
+        let row = i + usize::from(rule_at.is_some_and(|at| i >= at as usize));
+        if row < offset || row >= offset + viewport {
+            continue;
         }
+        let y = inner.y + (row - offset) as u16;
         let row_area = Rect {
             y,
             height: 1,
@@ -1194,22 +1363,23 @@ fn draw_action_menu(frame: &mut Frame<'_>, area: Rect, state: &ActionMenuState) 
         } else {
             Span::styled("  ", Style::default())
         };
-        let label_len = item.label.chars().count() as u16;
+        let hotkey_width = usize::from(inner_w >= GUTTER + HOTKEY_W + 3);
+        let label_width = (inner_w as usize).saturating_sub(GUTTER as usize + 3 + hotkey_width);
+        let label = crate::format::truncate(item.label, label_width);
+        let label_len = label.chars().count() as u16;
         let pad = inner_w
             .saturating_sub(GUTTER)
             .saturating_sub(label_len)
-            .saturating_sub(HOTKEY_W);
+            .saturating_sub(hotkey_width as u16);
         let padding = Span::styled(" ".repeat(pad as usize), Style::default());
-        let hotkey_span = match item.hotkey {
-            Some(c) => Span::styled(c.to_string(), Style::default().fg(theme::text_dim_color())),
-            None => Span::styled(
-                " ".to_string(),
-                Style::default().fg(theme::text_dim_color()),
-            ),
-        };
+        let hotkey_span = Span::styled(
+            if hotkey_width == 0 { None } else { item.hotkey }
+                .map_or_else(String::new, |c| c.to_string()),
+            Style::default().fg(theme::text_dim_color()),
+        );
         let line = Line::from(vec![
             glyph,
-            Span::styled(item.label.to_string(), label_style),
+            Span::styled(label, label_style),
             padding,
             hotkey_span,
         ])

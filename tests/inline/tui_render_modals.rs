@@ -1364,6 +1364,332 @@ fn the_stop_shunt_confirm_renders_its_rows_and_a_danger_stop() {
     }
 }
 
+#[test]
+fn long_choice_modals_keep_the_selected_option_and_thumb_visible() {
+    use crate::tui::app::{
+        ActionItem, ActionMenuAction, ActionMenuState, DivergenceTargetForm, PresetPickerForm,
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let render = |draw: &dyn Fn(&mut Frame<'_>, Rect)| {
+        let mut term = Terminal::new(TestBackend::new(80, 14)).unwrap();
+        term.draw(|f| draw(f, f.area())).unwrap();
+        crate::testutil::buffer_rows(term.backend().buffer())
+    };
+    let targets = (0..24).map(|i| format!("account-{i:02}")).collect();
+    let target = DivergenceTargetForm {
+        targets,
+        cursor: 24,
+        scroll: std::cell::Cell::new(0),
+    };
+    let rows = render(&|f, area| draw_divergence_target(f, area, &target));
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("❯ overwrite 'account-23'")),
+        "selected target hidden: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains('┃')),
+        "target overflow has no thumb: {rows:?}"
+    );
+
+    let presets = (0..24)
+        .map(|i| crate::presets::Preset {
+            name: format!("preset-{i:02}"),
+            base_url: None,
+            models: Default::default(),
+            builtin: false,
+        })
+        .collect();
+    let preset = PresetPickerForm {
+        target: "work".into(),
+        presets,
+        cursor: 23,
+        scroll: std::cell::Cell::new(0),
+    };
+    let rows = render(&|f, area| draw_preset_picker(f, area, &preset));
+    assert!(
+        rows.iter().any(|row| row.contains("❯ preset-23")),
+        "selected preset hidden: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains('┃')),
+        "preset overflow has no thumb: {rows:?}"
+    );
+    let mut preset = preset;
+    preset.cursor = 5;
+    let before = render(&|f, area| draw_preset_picker(f, area, &preset));
+    let before_y = before
+        .iter()
+        .position(|row| row.contains("❯ preset-05"))
+        .unwrap();
+    preset.cursor = 6;
+    let rows = render(&|f, area| draw_preset_picker(f, area, &preset));
+    let after_y = rows
+        .iter()
+        .position(|row| row.contains("❯ preset-06"))
+        .unwrap();
+    assert_eq!(
+        after_y,
+        before_y + 1,
+        "an interior selection must move within its viewport: {rows:?}"
+    );
+    preset.cursor = 23;
+    let _ = render(&|f, area| draw_preset_picker(f, area, &preset));
+    preset.cursor = 0;
+    let rows = render(&|f, area| draw_preset_picker(f, area, &preset));
+    assert!(
+        rows.iter().any(|row| row.contains("❯ preset-00")),
+        "wrapped selection cannot return to first: {rows:?}"
+    );
+
+    let menu = ActionMenuState {
+        items: (0..24)
+            .map(|_| ActionItem {
+                label: "reload stats",
+                hotkey: Some('r'),
+                action: ActionMenuAction::ReloadTokenStats,
+            })
+            .collect(),
+        scoped_len: 0,
+        context: None,
+        cursor: 23,
+        scroll: std::cell::Cell::new(0),
+    };
+    let rows = render(&|f, area| draw_action_menu(f, area, &menu));
+    assert!(
+        rows.iter().any(|row| row.contains("❯ reload stats")),
+        "selected action hidden: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains('┃')),
+        "action overflow has no thumb: {rows:?}"
+    );
+
+    let mut menu = menu;
+    menu.cursor = 5;
+    let before = render(&|f, area| draw_action_menu(f, area, &menu));
+    let before_y = before
+        .iter()
+        .position(|row| row.contains("❯ reload stats"))
+        .unwrap();
+    menu.cursor = 6;
+    let rows = render(&|f, area| draw_action_menu(f, area, &menu));
+    let after_y = rows
+        .iter()
+        .position(|row| row.contains("❯ reload stats"))
+        .unwrap();
+    assert_eq!(
+        after_y,
+        before_y + 1,
+        "an interior action must move within its viewport: {rows:?}"
+    );
+    let split = ActionMenuState {
+        scoped_len: 12,
+        cursor: 12,
+        ..menu
+    };
+    let rows = render(&|f, area| draw_action_menu(f, area, &split));
+    assert!(
+        rows.iter().any(|row| row.contains("❯ reload stats")),
+        "first global action hidden: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains('─') && !row.contains('╭') && !row.contains('╰')),
+        "group rule missing: {rows:?}"
+    );
+    let mut app = empty_app(Tab::Tokens);
+    app.open_modal(Modal::ActionMenu(ActionMenuState {
+        items: vec![
+            ActionItem {
+                label: "period: lifetime",
+                hotkey: Some('l'),
+                action: ActionMenuAction::TokensPeriodLifetime,
+            },
+            ActionItem {
+                label: "period: daily",
+                hotkey: Some('p'),
+                action: ActionMenuAction::TokensPeriodDaily,
+            },
+        ],
+        scoped_len: 0,
+        context: None,
+        cursor: 0,
+        scroll: std::cell::Cell::new(0),
+    }));
+    crate::tui::app::handle_key(
+        &mut app,
+        crate::testutil::key(ratatui::crossterm::event::KeyCode::Char('p')),
+    );
+    assert!(app.modals.is_empty());
+    assert_eq!(app.token_period, crate::tui::app::TokenPeriod::Daily);
+
+    let narrow = ActionMenuState {
+        items: vec![ActionItem {
+            label: "reload stats",
+            hotkey: Some('r'),
+            action: ActionMenuAction::ReloadTokenStats,
+        }],
+        scoped_len: 0,
+        context: None,
+        cursor: 0,
+        scroll: std::cell::Cell::new(0),
+    };
+    let mut term = Terminal::new(TestBackend::new(20, 14)).unwrap();
+    term.draw(|f| draw_action_menu(f, f.area(), &narrow))
+        .unwrap();
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        rows.iter().any(|row| row.contains("❯ rel…   r")),
+        "narrow menu hid its assigned hotkey or label ellipsis: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains('┃')),
+        "fitting menu drew a thumb: {rows:?}"
+    );
+    let env = crate::tui::app::EnvCollisionForm {
+        profile: "work".into(),
+        key: "ENDPOINT".into(),
+        reason: "a very long setting name that wraps across the narrow modal content field".into(),
+        existing_idx: None,
+        cursor: 2,
+        scroll: std::cell::Cell::new(0),
+        reviewing_overwrite: false,
+        confirm_overwrite: false,
+        max_scroll: std::cell::Cell::new(0),
+        overwrite_needs_review: std::cell::Cell::new(false),
+    };
+    let rows = render(&|f, area| draw_env_collision(f, area, &env));
+    assert!(
+        rows.iter().any(|row| row.contains("❯ cancel")),
+        "selected env choice hidden: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("back out, no change")),
+        "selected choice detail hidden: {rows:?}"
+    );
+    let tall_env = crate::tui::app::EnvCollisionForm {
+        reason: "your ~/.claude/settings.json".into(),
+        cursor: 0,
+        ..env
+    };
+    let mut narrow = Terminal::new(TestBackend::new(20, 14)).unwrap();
+    narrow
+        .draw(|f| draw_env_collision(f, f.area(), &tall_env))
+        .unwrap();
+    let rows = crate::testutil::buffer_rows(narrow.backend().buffer());
+    assert!(
+        rows.iter().any(|row| row.contains("❯ add the")),
+        "selected overwrite action hidden: {rows:?}"
+    );
+    // The selected choice may exceed this viewport; its confirmation must carry the full consequence.
+    let mut app = empty_app(Tab::Config);
+    app.modals
+        .push(crate::tui::app::Modal::EnvCollision(tall_env));
+    let press = |app: &mut App, code| crate::tui::app::handle_key(app, crate::testutil::key(code));
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    let confirm = app
+        .modals
+        .last()
+        .expect("overwrite needs a second confirmation");
+    narrow
+        .draw(|f| super::draw(f, f.area(), &app, confirm))
+        .unwrap();
+    let rows = crate::testutil::buffer_rows(narrow.backend().buffer());
+    let buttons: Vec<_> = rows
+        .iter()
+        .filter_map(|row| {
+            let inside = row.split_once('│')?.1.split_once('│')?.0;
+            matches!(inside.trim(), "cancel" | "add").then(|| inside.trim().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        buttons,
+        ["cancel", "add"],
+        "both decisions stay visible before scrolling"
+    );
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    assert!(
+        matches!(app.modals.last(), Some(crate::tui::app::Modal::EnvCollision(form)) if !form.reviewing_overwrite),
+        "cancel must return to the choice list"
+    );
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    let confirm = app.modals.last().unwrap();
+    narrow
+        .draw(|f| super::draw(f, f.area(), &app, confirm))
+        .unwrap();
+    for _ in 0..20 {
+        press(&mut app, ratatui::crossterm::event::KeyCode::Down);
+    }
+    let confirm = app.modals.last().unwrap();
+    narrow
+        .draw(|f| super::draw(f, f.area(), &app, confirm))
+        .unwrap();
+    let rows = crate::testutil::buffer_rows(narrow.backend().buffer());
+    assert!(
+        rows.iter().any(|row| row.contains("laude/sett"))
+            && rows.iter().any(|row| row.contains("ings.json")),
+        "overwrite confirmation hid its consequence ending: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("cancel")),
+        "overwrite confirmation hid its safe choice: {rows:?}"
+    );
+    press(&mut app, ratatui::crossterm::event::KeyCode::Esc);
+    assert!(
+        matches!(app.modals.last(), Some(crate::tui::app::Modal::EnvCollision(form)) if !form.reviewing_overwrite),
+        "esc must return to the choice list"
+    );
+    let full = crate::tui::app::EnvCollisionForm {
+        profile: "work".into(),
+        key: "ENDPOINT".into(),
+        reason: "your ~/.claude/settings.json".into(),
+        existing_idx: None,
+        cursor: 0,
+        scroll: std::cell::Cell::new(0),
+        reviewing_overwrite: true,
+        confirm_overwrite: false,
+        max_scroll: std::cell::Cell::new(0),
+        overwrite_needs_review: std::cell::Cell::new(true),
+    };
+    let mut wide = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    wide.draw(|f| draw_env_collision(f, f.area(), &full))
+        .unwrap();
+    let consequence: Vec<_> = crate::testutil::buffer_rows(wide.backend().buffer())
+        .into_iter()
+        .filter(|row| row.contains("this account's value overrides"))
+        .map(|row| {
+            row.split_once('│')
+                .unwrap()
+                .1
+                .split_once('│')
+                .unwrap()
+                .0
+                .trim()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        consequence,
+        ["this account's value overrides your ~/.claude/settings.json"],
+        "the whole interpolated consequence must remain intact"
+    );
+    let divergence = crate::tui::app::DivergenceForm {
+        active: "work".into(),
+        sibling: Some("other".into()),
+        cursor: 3,
+        scroll: std::cell::Cell::new(0),
+    };
+    let rows = render(&|f, area| draw_divergence(f, area, &divergence));
+    assert!(
+        rows.iter().any(|row| row.contains("❯ discard this login")),
+        "selected divergence choice hidden: {rows:?}"
+    );
+}
+
 /// The preset picker teaches its `d` in prose: ACCENT + bold, the rest dim.
 #[test]
 fn the_preset_picker_styles_its_delete_key() {
@@ -1373,6 +1699,7 @@ fn the_preset_picker_styles_its_delete_key() {
         target: "work".to_string(),
         presets: Vec::new(),
         cursor: 0,
+        scroll: std::cell::Cell::new(0),
     };
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     term.draw(|f| draw_preset_picker(f, f.area(), &form))
