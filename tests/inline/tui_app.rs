@@ -17086,13 +17086,15 @@ fn removing_the_selected_codex_account_targets_the_visible_claude_fallback() {
         crate::testutil::blank_profile(&crate::profile::ProfileName::from("b")),
     ]);
     app.tab = Tab::Overview;
-    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
-    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    app.overview_cursor = 2;
     assert!(matches!(
         app.current_main_item(),
         Some(MainItemKind::Codex(0))
     ));
-    assert_eq!(app.profile_cursor, 1);
+    assert_eq!(
+        app.profile_cursor, 0,
+        "a remains the previous Claude selection"
+    );
     crate::testutil::write_codex_roster(&[]);
     app.last_codex_rows_refresh = None;
     poll_codex_rows(&mut app);
