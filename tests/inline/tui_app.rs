@@ -202,6 +202,8 @@ fn the_delegates_detail_reads_the_store_in_banded_order() {
                 isolated: false,
                 cwd: None,
                 spawned_by: None,
+                host_session: None,
+                host_pid: 0,
                 idle_secs: Some(300),
                 kind: jobs::RecordKind::Collectable,
                 owner_pid: 0,

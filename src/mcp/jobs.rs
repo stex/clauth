@@ -209,6 +209,21 @@ pub(crate) struct JobRecord {
     /// session's credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) spawned_by: Option<String>,
+    /// The Claude Code session id the spawning `clauth mcp` server started
+    /// under (`CLAUDE_CODE_SESSION_ID` in its environment): the host identity
+    /// a reader matches when either side's pid is unknown, valid until the
+    /// host's first `/clear`. `None` on a record an older server wrote and on
+    /// a server launched outside Claude Code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) host_session: Option<String>,
+    /// The `claude` process hosting the spawning conversation (the server's
+    /// parent). A process outlives its session id: `/clear` hands the
+    /// conversation a new id while the same process and server live on, and
+    /// closing the process orphans every delegate it spawned under either id.
+    /// `0` where unknown: a record an older server wrote, or (off unix) a host
+    /// with no single session record naming its id at server start.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub(crate) host_pid: u32,
     /// The child's own session id, off the first streamed event that carried
     /// one: the resume handle a crashed run's record must outlive its server
     /// for. The stdout reader captures it long before any crash and the
@@ -320,6 +335,10 @@ pub(crate) struct RunningSpec {
     /// for the same reason (see [`JobRecord::cwd`], [`JobRecord::spawned_by`]).
     pub(crate) cwd: Option<String>,
     pub(crate) spawned_by: Option<String>,
+    /// The spawning conversation and its host process, carried the same way
+    /// (see [`JobRecord::host_session`], [`JobRecord::host_pid`]).
+    pub(crate) host_session: Option<String>,
+    pub(crate) host_pid: u32,
     /// Which spelling every write of this record lands under. A background job
     /// is `Collectable` from its reserve; a blocking one is `Liveness` until its
     /// caller walks away and [`promote`] renames it.
@@ -471,6 +490,8 @@ pub(crate) fn write_heartbeat_with_session(
             isolated: spec.isolated,
             cwd: spec.cwd.clone(),
             spawned_by: spec.spawned_by.clone(),
+            host_session: spec.host_session.clone(),
+            host_pid: spec.host_pid,
             session_id: session_id.map(str::to_string),
             last_output_at,
             recorded_at: spec.recorded_at,
@@ -535,6 +556,8 @@ pub(crate) fn write_done(spec: &RunningSpec, envelope: serde_json::Value) -> Res
             isolated: spec.isolated,
             cwd: spec.cwd.clone(),
             spawned_by: spec.spawned_by.clone(),
+            host_session: spec.host_session.clone(),
+            host_pid: spec.host_pid,
             session_id,
             timeout_secs: 0,
             idle_secs: None,
@@ -556,7 +579,7 @@ pub(crate) fn write_done(spec: &RunningSpec, envelope: serde_json::Value) -> Res
 }
 
 /// [`write_done`] from loose parts, for tests that finalize a record with no
-/// running spec of their own: no cwd and no spawning account, the shape an
+/// running spec of their own: no cwd, spawning account or host, the shape an
 /// older server's finish wrote.
 #[cfg(test)]
 pub(crate) fn write_done_parts(
@@ -581,6 +604,8 @@ pub(crate) fn write_done_parts(
             isolated,
             cwd: None,
             spawned_by: None,
+            host_session: None,
+            host_pid: 0,
             kind: RecordKind::Collectable,
             owner_pid: 0,
             owner_started_at: 0,

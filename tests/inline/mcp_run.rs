@@ -1350,6 +1350,8 @@ fn running_spec(job_id: &str, profile: &str, started_at: u64) -> jobs::RunningSp
         isolated: false,
         cwd: None,
         spawned_by: None,
+        host_session: None,
+        host_pid: 0,
         idle_secs: Some(300),
         // A background job's record is collectable from its reserve; the
         // liveness spelling belongs to a blocking run alone.
@@ -9039,4 +9041,114 @@ fn resolve_fanout_refuses_a_codex_member_as_a_codex_account() {
         "profile not found: cx; cx names a CODEX account, which these tools do not manage — \
          they are Claude Code only. Switch it with `clauth <name>`"
     );
+}
+
+/// The origin stamps the conversation that spawned the delegate from the
+/// server's own `CLAUDE_CODE_SESSION_ID`, and its host process from the
+/// server's parent; an empty or absent variable (a server launched outside
+/// Claude Code) stamps no session id rather than a blank one every such server
+/// would share.
+#[test]
+fn the_delegate_origin_stamps_the_host_session_off_the_server_env() {
+    let home = HomeSandbox::new();
+    let config = crate::profile::AppConfig {
+        state: crate::profile::AppState::default(),
+        profiles: Vec::new(),
+    };
+    let host = |value: Option<&str>| {
+        let _pin = crate::testutil::EnvPin::new(
+            &home,
+            &[("CLAUDE_CODE_SESSION_ID", value.map(std::ffi::OsStr::new))],
+        );
+        DelegateOrigin::resolve(&config, None, None).host_session
+    };
+    #[cfg(unix)]
+    assert_eq!(
+        DelegateOrigin::resolve(&config, None, None).host_pid,
+        std::os::unix::process::parent_id(),
+        "the host process is this server's parent"
+    );
+    assert_eq!(host(Some("sess-host-1")), Some("sess-host-1".to_string()));
+    assert_eq!(host(Some("")), None, "an empty id stamps nothing");
+    assert_eq!(host(None), None, "no id stamps nothing");
+}
+
+/// Off unix the host pid comes from Claude Code's session records: the
+/// `<pid>.json` whose `sessionId` names the server's session. A record for
+/// another session, a non-record file and an absent dir name no host.
+#[test]
+fn the_session_record_naming_the_session_gives_the_host_pid() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("4242.json"),
+        r#"{"pid":4242,"sessionId":"sess-host","name":"repo-q"}"#,
+    )
+    .expect("write host record");
+    std::fs::write(
+        dir.path().join("5151.json"),
+        r#"{"pid":5151,"sessionId":"sess-peer","name":"repo-p"}"#,
+    )
+    .expect("write peer record");
+    std::fs::write(dir.path().join("4242.abc.key"), "not json").expect("write key");
+    assert_eq!(session_record_pid(dir.path(), "sess-host"), Some(4242));
+    assert_eq!(session_record_pid(dir.path(), "sess-none"), None);
+    assert_eq!(
+        session_record_pid(&dir.path().join("absent"), "sess-host"),
+        None
+    );
+    // A dead record left behind, or a second process resumed on the same id:
+    // ambiguous, so no host rather than a wrong one.
+    std::fs::write(
+        dir.path().join("6060.json"),
+        r#"{"pid":6060,"sessionId":"sess-host","name":"repo-q"}"#,
+    )
+    .expect("write duplicate record");
+    assert_eq!(session_record_pid(dir.path(), "sess-host"), None);
+}
+
+/// The off-unix host lookup reads the server's `CLAUDE_CODE_SESSION_ID` and the
+/// session's config dir (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
+#[test]
+fn the_session_host_pid_reads_the_server_env_and_config_dir() {
+    let home = HomeSandbox::new();
+    let config = home.home().join("runtime-x");
+    std::fs::create_dir_all(config.join("sessions")).expect("sessions dir");
+    std::fs::write(
+        config.join("sessions").join("4242.json"),
+        r#"{"pid":4242,"sessionId":"sess-host","name":"repo-q"}"#,
+    )
+    .expect("write record");
+    assert_eq!(session_host_pid(), None, "no session id, no host");
+    let global = home.home().join(".claude").join("sessions");
+    std::fs::create_dir_all(&global).expect("global sessions dir");
+    std::fs::write(
+        global.join("5151.json"),
+        r#"{"pid":5151,"sessionId":"sess-host","name":"repo-g"}"#,
+    )
+    .expect("write global record");
+    let _sid = crate::testutil::EnvPin::new(
+        &home,
+        &[
+            (
+                "CLAUDE_CODE_SESSION_ID",
+                Some(std::ffi::OsStr::new("sess-host")),
+            ),
+            ("CLAUDE_CONFIG_DIR", Some(std::ffi::OsStr::new(""))),
+        ],
+    );
+    assert_eq!(
+        session_host_pid(),
+        Some(5151),
+        "an empty CLAUDE_CONFIG_DIR falls back to ~/.claude"
+    );
+    drop(_sid);
+    let _dir = crate::testutil::ConfigDirSandbox::new(&home, &config);
+    let _sid = crate::testutil::EnvPin::new(
+        &home,
+        &[(
+            "CLAUDE_CODE_SESSION_ID",
+            Some(std::ffi::OsStr::new("sess-host")),
+        )],
+    );
+    assert_eq!(session_host_pid(), Some(4242));
 }

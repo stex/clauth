@@ -930,6 +930,8 @@ fn running_spec(job_id: &str, profile: &str, started_at: u64, kind: RecordKind) 
         isolated: false,
         cwd: None,
         spawned_by: None,
+        host_session: None,
+        host_pid: 0,
         idle_secs: Some(300),
         kind,
         owner_pid: 0,

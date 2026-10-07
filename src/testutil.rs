@@ -25,6 +25,8 @@ pub(crate) struct HomeSandbox {
     _guard: crate::lockorder::RankedGuard<'static, ()>,
     home: PathBuf,
     prev_config_dir: Option<std::ffi::OsString>,
+    prev_session_id: Option<std::ffi::OsString>,
+    prev_claude_pid: Option<std::ffi::OsString>,
 }
 
 impl HomeSandbox {
@@ -40,7 +42,7 @@ impl HomeSandbox {
         let tmp = tempfile::tempdir().expect("create home sandbox");
         let home = tmp.path().to_path_buf();
         crate::profile::set_home_override(home.clone());
-        // `home_override` does not reach `CLAUDE_CONFIG_DIR`, and the operator's
+        // `home_override` does not reach `CLAUDE_CONFIG_DIR`, and the user's
         // own value names a runtime OUTSIDE this tempdir: `which::session_auth`
         // and `which::resolve_active` honor it, so a test run from inside a
         // `clauth start` session resolves the real `~/.claude/.credentials.json`
@@ -51,11 +53,23 @@ impl HomeSandbox {
         let prev_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
         // SAFETY: test-only, serialized by `HOME_TEST_LOCK`, restored on drop.
         unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") };
+        // Same for the live Claude Code session the suite may run under: its
+        // session id and process would stamp a minted delegate's host and decide
+        // a hook's own process, passing or failing by where the suite ran.
+        let prev_session_id = std::env::var_os("CLAUDE_CODE_SESSION_ID");
+        let prev_claude_pid = std::env::var_os("CLAUDE_PID");
+        // SAFETY: as above.
+        unsafe {
+            std::env::remove_var("CLAUDE_CODE_SESSION_ID");
+            std::env::remove_var("CLAUDE_PID");
+        }
         Self {
             _tmp: tmp,
             _guard: guard,
             home,
             prev_config_dir,
+            prev_session_id,
+            prev_claude_pid,
         }
     }
 
@@ -73,7 +87,7 @@ impl Drop for HomeSandbox {
     fn drop(&mut self) {
         // Join BEFORE clearing the override, not after and not per-test. A
         // detached worker still running when `HOME_OVERRIDE` clears resolves
-        // the operator's REAL `$HOME` and takes real locks under `~/.clauth`
+        // the user's REAL `$HOME` and takes real locks under `~/.clauth`
         // (`RotationGuard::acquire` alone does `mkdir_700` + a blocking
         // flock). Doing it here rather than asking each test to call the join
         // fns covers the tests that never thought about it — which is every
@@ -84,13 +98,21 @@ impl Drop for HomeSandbox {
         crate::tui::join_test_workers();
         join_background_tasks();
         crate::profile::clear_home_override();
-        // Restore the operator's own value, after the joins above for the same
+        // Restore the user's own value, after the joins above for the same
         // reason the home override is cleared there: a still-running worker that
         // sees it back resolves outside the sandbox.
         // SAFETY: test-only, serialized by `HOME_TEST_LOCK`, still held.
         match self.prev_config_dir.take() {
             Some(prev) => unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", prev) },
             None => unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") },
+        }
+        match self.prev_session_id.take() {
+            Some(prev) => unsafe { std::env::set_var("CLAUDE_CODE_SESSION_ID", prev) },
+            None => unsafe { std::env::remove_var("CLAUDE_CODE_SESSION_ID") },
+        }
+        match self.prev_claude_pid.take() {
+            Some(prev) => unsafe { std::env::set_var("CLAUDE_PID", prev) },
+            None => unsafe { std::env::remove_var("CLAUDE_PID") },
         }
     }
 }

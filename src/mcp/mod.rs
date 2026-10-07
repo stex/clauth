@@ -4447,13 +4447,15 @@ struct MintSpec {
     origin: DelegateOrigin,
 }
 
-/// Where a delegate runs and whose session asked for it: the two facts a job
+/// Where a delegate runs and whose session asked for it: the facts a job
 /// record carries so the Services tab can say where each delegate works and
-/// who spawned it.
+/// who spawned it, and the context note can count its own conversation's.
 #[derive(Debug, Clone, Default)]
 struct DelegateOrigin {
     cwd: Option<String>,
     spawned_by: Option<String>,
+    host_session: Option<String>,
+    host_pid: u32,
 }
 
 impl DelegateOrigin {
@@ -4463,7 +4465,8 @@ impl DelegateOrigin {
     /// a resume whose workspace does not resolve falls through to the caller's
     /// `cwd`, since `run_delegate` refuses that run anyway. The account is whichever profile
     /// owns this server's session credentials (`which::resolve_active`, the
-    /// `which` tool's own answer).
+    /// `which` tool's own answer). The host is the session id this server
+    /// started under and the process that spawned it.
     fn resolve(config: &AppConfig, resume: Option<&str>, cwd: Option<&str>) -> Self {
         let workspace = resume.and_then(|id| resolve_resume_workspace(id).ok());
         Self {
@@ -4471,8 +4474,67 @@ impl DelegateOrigin {
                 .and_then(|dir| std::path::absolute(dir).ok())
                 .map(|dir| dir.to_string_lossy().into_owned()),
             spawned_by: crate::which::resolve_active(config).map(|(name, _)| name),
+            host_session: std::env::var("CLAUDE_CODE_SESSION_ID")
+                .ok()
+                .filter(|id| !id.is_empty()),
+            host_pid: host_pid(),
         }
     }
+}
+
+/// The `claude` process hosting this server, resolved once ([`serve`] primes
+/// it at startup). On unix it is the server's parent: Claude Code spawns
+/// `clauth mcp` as its own direct child. Elsewhere it is [`session_host_pid`],
+/// which matches only until a `/clear` moves the record's id, hence the
+/// startup resolve.
+static HOST_PID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+fn host_pid() -> u32 {
+    *HOST_PID.get_or_init(resolve_host_pid)
+}
+
+#[cfg(unix)]
+fn resolve_host_pid() -> u32 {
+    std::os::unix::process::parent_id()
+}
+
+#[cfg(not(unix))]
+fn resolve_host_pid() -> u32 {
+    session_host_pid().unwrap_or(0)
+}
+
+/// The pid of the session record naming this server's
+/// `CLAUDE_CODE_SESSION_ID` in the session's config dir.
+#[cfg(any(not(unix), test))]
+fn session_host_pid() -> Option<u32> {
+    let session_id = std::env::var("CLAUDE_CODE_SESSION_ID")
+        .ok()
+        .filter(|id| !id.is_empty())?;
+    let sessions = crate::which::session_config_dir_or_global()?.join("sessions");
+    session_record_pid(&sessions, &session_id)
+}
+
+/// The pid of the Claude Code session record in `dir` (`<pid>.json`, one per
+/// process) whose `sessionId` is `session_id`, when exactly one names it: a
+/// dead record left behind, or two processes resumed on one id, makes the
+/// answer ambiguous, and a wrong pid would hide this process's delegates.
+#[cfg(any(not(unix), test))]
+fn session_record_pid(dir: &std::path::Path, session_id: &str) -> Option<u32> {
+    #[derive(serde::Deserialize)]
+    struct SessionRecord {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        pid: u32,
+    }
+    let mut matching = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| std::fs::read(e.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<SessionRecord>(&bytes).ok())
+        .filter(|r| r.session_id == session_id);
+    let pid = matching.next()?.pid;
+    matching.next().is_none().then_some(pid)
 }
 
 /// The directory a delegate's `claude` runs in: a resume's recorded workspace,
@@ -4539,6 +4601,8 @@ fn mint_spec(mint: &MintSpec, kind: jobs::RecordKind) -> jobs::RunningSpec {
         isolated: mint.isolation == Isolation::Isolated,
         cwd: mint.origin.cwd.clone(),
         spawned_by: mint.origin.spawned_by.clone(),
+        host_session: mint.origin.host_session.clone(),
+        host_pid: mint.origin.host_pid,
         kind,
         // The owning server's liveness marker, so a later server reads the
         // record dead the moment this one dies — see `jobs::hold_server_marker`.
@@ -5611,6 +5675,7 @@ pub(crate) fn serve() -> Result<()> {
             None
         }
     };
+    let _ = host_pid();
     // The delegate-dot knob, read once at startup from the on-demand config.
     // A missing or unreadable profiles.toml answers the default (dot on), so
     // the knob can never fail the server.
