@@ -2891,7 +2891,7 @@ fn a_codex_rows_usage_cells_sit_under_their_headers() {
 
     let wide = OverviewWidths::new(80, &app);
     assert!(wide.seven_day > 0, "80 columns keep the 7d column");
-    let line = render_codex_row(&row, &wide);
+    let line = render_codex_row(&row, &wide, false);
     assert_eq!(
         five_hour_cell_text(&wide, false, &line),
         fixed("42%", wide.five_hour),
@@ -2905,7 +2905,7 @@ fn a_codex_rows_usage_cells_sit_under_their_headers() {
 
     let narrow = OverviewWidths::new(56, &app);
     assert_eq!(narrow.seven_day, 0, "56 columns drop the 7d column");
-    let line = render_codex_row(&row, &narrow);
+    let line = render_codex_row(&row, &narrow, false);
     assert_eq!(
         five_hour_cell_text(&narrow, false, &line),
         fixed("42%", narrow.five_hour)
@@ -2938,11 +2938,11 @@ fn a_codex_row_shows_the_reset_chip_only_while_one_is_available() {
 
     let wide = OverviewWidths::new(80, &app);
     assert!(
-        text(render_codex_row(&row(Some(2)), &wide)).contains("↺ 2"),
+        text(render_codex_row(&row(Some(2)), &wide, false)).contains("↺ 2"),
         "two banked resets render the chip"
     );
     assert!(
-        !text(render_codex_row(&row(None), &wide)).contains("↺"),
+        !text(render_codex_row(&row(None), &wide, false)).contains("↺"),
         "no available reset (the constructor floors zero to None): no chip"
     );
 }
@@ -2978,8 +2978,8 @@ fn a_quarantined_codex_row_renders_the_broken_marker() {
 
     let app = App::new(config_with(vec![], None, vec![]));
     let widths = OverviewWidths::new(80, &app);
-    let broken = render_codex_row(&rows[0], &widths);
-    let live = render_codex_row(&rows[1], &widths);
+    let broken = render_codex_row(&rows[0], &widths, false);
+    let live = render_codex_row(&rows[1], &widths, false);
 
     // The codex row carries the list rows' slots (blank 2-cell cursor prefix,
     // marker cell, gap, name), so the glyph and the name sit in the claude
@@ -3324,6 +3324,67 @@ fn the_accounts_scrollbar_counts_the_codex_rows() {
         "┃┃┃┊┊",
         "seven rows overflow a 5-row list: thumb 5*5/7 = 3 rows at offset 0, then track"
     );
+}
+
+#[test]
+fn selecting_the_active_codex_row_keeps_its_active_name_color() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    crate::testutil::write_codex_roster(&["cx1"]);
+    let mut app = App::new(config_with(vec![], None, vec![]));
+    app.codex_rows[0].active = true;
+    let mut term =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 8)).expect("terminal");
+    term.draw(|f| draw_overview_accounts(f, f.area(), &app))
+        .expect("draw");
+    let buf = term.backend().buffer();
+    let rows = crate::testutil::buffer_rows(buf);
+    let x = rows[3].find("cx1").expect("active Codex row is selected") as u16;
+    assert!(rows[3].contains("❯"), "selection is visible: {rows:?}");
+    assert_eq!(
+        buf.cell((x, 3)).expect("name cell").fg,
+        theme::accent().fg.expect("accent color")
+    );
+}
+
+#[test]
+fn the_last_codex_row_and_thumb_follow_a_short_viewport() {
+    let _home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_codex_roster(&["cx1", "cx2", "cx3"]);
+    let mut app = App::new(config_with(
+        vec![
+            profile("cl1", 80.0, 10.0, 3_600),
+            profile("cl2", 80.0, 20.0, 3_600),
+        ],
+        None,
+        vec![],
+    ));
+    assert_eq!(app.codex_rows.len(), 3);
+    app.overview_cursor = 4;
+    assert_eq!(
+        app.current_main_item().map(|item| format!("{item:?}")),
+        Some("Codex(2)".to_string())
+    );
+    let mut term =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 8)).expect("terminal");
+    term.draw(|f| draw_overview_accounts(f, f.area(), &app))
+        .expect("draw");
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        rows[6].contains("❯") && rows[6].contains("cx3"),
+        "last row: {rows:?}"
+    );
+    assert_eq!(accounts_scrollbar_column(&app, 80, 8), "┊┊┃┃┃");
+    app.harness_filter = crate::tui::app::HarnessFilter::Codex;
+    app.overview_cursor = 2;
+    term.draw(|f| draw_overview_accounts(f, f.area(), &app))
+        .expect("codex-only draw");
+    let rows = crate::testutil::buffer_rows(term.backend().buffer());
+    assert!(
+        rows[5].contains("❯") && rows[5].contains("cx3"),
+        "codex-only: {rows:?}"
+    );
+    assert_eq!(accounts_scrollbar_column(&app, 80, 8), "     ");
 }
 
 /// cloudy-tui "Keys and commands inside prose": the codex section's heading

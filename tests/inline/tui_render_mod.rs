@@ -141,14 +141,14 @@ fn overview_selection_moves_inside_a_persistent_viewport() {
             .collect(),
     });
     let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    app.profile_cursor = 20;
+    app.overview_cursor = 20;
     term.draw(|f| super::draw(f, &app)).unwrap();
     let first = crate::testutil::buffer_rows(term.backend().buffer());
     let before = first
         .iter()
         .position(|line| line.contains("fixture-20"))
         .expect("selected account visible");
-    app.profile_cursor = 18;
+    app.overview_cursor = 18;
     term.draw(|f| super::draw(f, &app)).unwrap();
     let second = crate::testutil::buffer_rows(term.backend().buffer());
     let after = second
@@ -174,6 +174,7 @@ fn account_selectors_hold_separate_viewports_across_tabs_and_resize() {
     });
     let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
     app.profile_cursor = 20;
+    app.overview_cursor = 20;
     term.draw(|f| super::draw(f, &app)).unwrap();
     app.tab = Tab::Setup;
     term.draw(|f| super::draw(f, &app)).unwrap();
@@ -186,6 +187,7 @@ fn account_selectors_hold_separate_viewports_across_tabs_and_resize() {
         "usage has its own viewport"
     );
     app.profile_cursor = 0;
+    app.overview_cursor = 0;
     app.tab = Tab::Overview;
     term.draw(|f| super::draw(f, &app)).unwrap();
     assert_eq!(

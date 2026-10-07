@@ -1,8 +1,8 @@
 //! Application state, keymap, and tick logic.
 //!
 //! Layout invariants:
-//!   - Overview: read-only account list; `profile_cursor` is shared with Usage
-//!     and Config so the highlight follows across tab switches.
+//!   - Overview: selectable Claude and Codex rows; `overview_cursor` maps onto
+//!     the visible filter, while Claude selections sync `profile_cursor` with Usage and Setup.
 //!   - Config: master-detail — account list + `+ new` row + inline editor
 //!     (`config_draft`). No popups for create / edit / rename / delete.
 //!   - Fallback: master-detail — ordered chain + `+ add` on the left; inline
@@ -2406,18 +2406,13 @@ pub(crate) struct Banner {
 
 // ── Overview list items ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MainItemKind {
     Profile(usize),
+    Codex(usize),
 }
 
-/// Which harness the Overview shows. A VIEW filter only: selection and every
-/// action stay bound to the claude list, because a codex account has no
-/// `Profile` record for them to act on and clauth switches it through its own
-/// CLI verb. So the codex section renders READ-ONLY, and while the claude rows
-/// are hidden every key bound to the selection is inert
-/// ([`claude_rows_hidden`]) rather than acting on a row the screen does not
-/// show.
+/// The Overview's visible harness filter; selection maps onto the rows it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum HarnessFilter {
     #[default]
@@ -2678,6 +2673,7 @@ pub(crate) struct App {
     /// On Setup may also rest on the trailing `+ new` row (== profile_count).
     pub(crate) profile_cursor: usize,
     pub(crate) overview_selector_offset: std::cell::Cell<usize>,
+    pub(crate) overview_cursor: usize,
     pub(crate) usage_selector_offset: std::cell::Cell<usize>,
     pub(crate) usage_detail_focus: StatusFocus,
     pub(crate) usage_detail_scroll: usize,
@@ -3244,6 +3240,7 @@ impl App {
             help_max_scroll: std::cell::Cell::new(0),
             profile_cursor: 0,
             overview_selector_offset: std::cell::Cell::new(0),
+            overview_cursor: 0,
             usage_selector_offset: std::cell::Cell::new(0),
             usage_detail_focus: StatusFocus::List,
             usage_detail_scroll: 0,
@@ -4090,9 +4087,14 @@ impl App {
     // ── Main list ────────────────────────────────────────────────────────────
 
     pub(crate) fn main_items(&self) -> Vec<MainItemKind> {
-        (0..self.config().profiles.len())
-            .map(MainItemKind::Profile)
-            .collect()
+        let mut rows = Vec::new();
+        if self.harness_filter.shows_claude() {
+            rows.extend((0..self.profile_count()).map(MainItemKind::Profile));
+        }
+        if self.harness_filter.shows_codex() {
+            rows.extend((0..self.codex_rows.len()).map(MainItemKind::Codex));
+        }
+        rows
     }
 
     pub(crate) fn profile_count(&self) -> usize {
@@ -4107,6 +4109,7 @@ impl App {
     pub(crate) fn clamp_profile_cursor(&mut self) {
         let max = self.profile_count().saturating_sub(1);
         self.profile_cursor = self.profile_cursor.min(max);
+        self.clamp_overview_cursor();
         // Every reload path lands here (a roster change can move or remove the
         // selected account), so the note tracks the selection for free.
         self.reload_selected_note();
@@ -4120,7 +4123,20 @@ impl App {
     }
 
     pub(crate) fn current_main_item(&self) -> Option<MainItemKind> {
-        self.main_items().get(self.profile_cursor).copied()
+        self.main_items().get(self.overview_cursor).copied()
+    }
+
+    fn clamp_overview_cursor(&mut self) {
+        self.overview_cursor = self
+            .overview_cursor
+            .min(self.main_items().len().saturating_sub(1));
+    }
+
+    fn sync_overview_profile_selection(&mut self) {
+        if let Some(MainItemKind::Profile(idx)) = self.current_main_item() {
+            self.profile_cursor = idx;
+            self.reload_selected_note();
+        }
     }
 }
 
@@ -4353,7 +4369,13 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         // `c` still reaches the per-tab dispatch (Tokens binds it too).
         KeyCode::Char('c') if app.tab == Tab::Overview => {
             app.disarm_quit();
+            let selected = app.current_main_item();
             app.harness_filter = app.harness_filter.next();
+            app.overview_cursor = selected
+                .and_then(|item| app.main_items().iter().position(|row| *row == item))
+                .unwrap_or(0);
+            app.sync_overview_profile_selection();
+            app.overview_selector_offset.set(0);
             return;
         }
         KeyCode::Char('a') => {
@@ -4656,6 +4678,9 @@ fn handle_tokens_key(app: &mut App, key: KeyEvent) {
 
 /// Switch the active tab and reset that tab's cursor to a sensible default.
 fn switch_tab(app: &mut App, tab: Tab) {
+    if tab == Tab::Overview && app.tab != Tab::Overview {
+        app.overview_cursor = app.profile_cursor;
+    }
     app.tab = tab;
     app.tab_activity[tab.index()] = None;
     app.config_draft = None;
@@ -4727,29 +4752,19 @@ fn step_profile_cursor(app: &mut App, delta: i32, len: usize) {
     app.reload_selected_note();
 }
 
-/// True, with a toast saying so, while the Overview's `Codex` filter hides the
-/// claude rows the cursor is bound to. Every key that reorders, steps or acts
-/// on the selection asks here first, so nothing acts on a row the screen does
-/// not show.
-fn claude_rows_hidden(app: &mut App) -> bool {
-    if app.harness_filter.shows_claude() {
-        return false;
-    }
-    app.toast(
-        ToastKind::Info,
-        format!("claude rows are hidden, press {}", prose::key("c")),
-    );
-    true
-}
-
 fn handle_overview_key(app: &mut App, key: KeyEvent) {
-    let count = app.profile_count();
+    let count = app.main_items().len();
     match key.code {
-        KeyCode::Up | KeyCode::Down | KeyCode::Enter if claude_rows_hidden(app) => {}
         KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => reorder_main_cursor(app, -1),
         KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => reorder_main_cursor(app, 1),
-        KeyCode::Up => step_profile_cursor(app, -1, count),
-        KeyCode::Down => step_profile_cursor(app, 1, count),
+        KeyCode::Up if count > 0 => {
+            app.overview_cursor = (app.overview_cursor + count - 1) % count;
+            app.sync_overview_profile_selection();
+        }
+        KeyCode::Down if count > 0 => {
+            app.overview_cursor = (app.overview_cursor + 1) % count;
+            app.sync_overview_profile_selection();
+        }
         KeyCode::Enter => activate_main_item(app),
         _ => {}
     }
@@ -7274,6 +7289,7 @@ fn activate_main_item(app: &mut App) {
     };
     match item {
         MainItemKind::Profile(idx) => request_switch_to(app, idx),
+        MainItemKind::Codex(_) => {}
     }
 }
 
@@ -7294,11 +7310,8 @@ fn reorder_main_cursor(app: &mut App, delta: i32) {
         app.toast(ToastKind::Danger, format!("reorder failed\n{e}"));
         return;
     }
-    if delta < 0 && app.profile_cursor > 0 {
-        app.profile_cursor -= 1;
-    } else if delta > 0 {
-        app.profile_cursor += 1;
-    }
+    app.profile_cursor = new_idx;
+    app.overview_cursor = new_idx;
 }
 
 /// One off-thread AUTH-1 switch-gate answer, posted by `spawn_switch_gate`'s
@@ -9467,9 +9480,7 @@ pub(crate) fn build_action_menu(app: &App) -> ActionMenuState {
 
     match app.tab {
         Tab::Overview => {
-            // The codex filter hides the claude rows the cursor is bound to,
-            // so nothing may act on the row under it.
-            if app.harness_filter.shows_claude() {
+            if matches!(app.current_main_item(), Some(MainItemKind::Profile(_))) {
                 context = push_account_scope(app, &mut scoped);
             }
             actions.push(RefreshAll);
@@ -13671,7 +13682,12 @@ fn poll_codex_rows(app: &mut App) {
         return;
     }
     app.last_codex_rows_refresh = Some(Instant::now());
+    let selected = app.current_main_item();
     app.codex_rows = codex_rows();
+    app.clamp_overview_cursor();
+    if app.tab == Tab::Overview && selected != app.current_main_item() {
+        app.sync_overview_profile_selection();
+    }
 }
 
 /// Re-probe the daemon presence + `status.json` health for the `[ daemon ]`

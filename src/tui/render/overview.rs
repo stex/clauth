@@ -116,42 +116,49 @@ fn draw_overview_accounts(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let header = overview_header(&widths, any_deepseek(app));
     frame.render_widget(Paragraph::new(header).style(theme::base()), header_area);
 
-    let items = if app.harness_filter.shows_claude() {
-        app.main_items()
-    } else {
-        Vec::new()
-    };
-    let sel = app.profile_cursor.min(items.len().saturating_sub(1));
+    let items = app.main_items();
+    let sel = app.overview_cursor.min(items.len().saturating_sub(1));
     let width = list_area.width;
-    let mut rows: Vec<ListItem<'_>> = items
-        .iter()
-        .enumerate()
-        .map(|(row, item)| match item {
-            MainItemKind::Profile(idx) => {
-                let selected = row == sel;
-                let line = render_overview_row(app, *idx, &widths, selected, focused);
-                ListItem::new(select_line(line, selected, focused, width))
+    let claude_count = if app.harness_filter.shows_claude() {
+        app.profile_count()
+    } else {
+        0
+    };
+    let mut rows: Vec<ListItem<'_>> = Vec::with_capacity(items.len() + 2);
+    for (index, item) in items.iter().enumerate() {
+        if index == claude_count && !codex.is_empty() {
+            if claude_count > 0 {
+                rows.push(ListItem::new(Line::from("")));
             }
-        })
-        .collect();
-    // The codex section, after the claude rows and never selectable: the cursor
-    // and every action are bound to `config.profiles`, and a codex account has
-    // no record there for them to act on. Rendering it read-only is what keeps
-    // "what the cursor can reach" and "what the screen shows" from diverging.
-    if !codex.is_empty() {
-        if !rows.is_empty() {
-            rows.push(ListItem::new(Line::from("")));
+            rows.push(ListItem::new(Line::from(prose::spans(
+                concat!("  codex — switch with ", cmd_lit!("clauth <name>")),
+                theme::dim(),
+            ))));
         }
-        rows.push(ListItem::new(Line::from(prose::spans(
-            concat!("  codex — switch with ", cmd_lit!("clauth <name>")),
-            theme::dim(),
-        ))));
-        for row in codex {
-            rows.push(ListItem::new(render_codex_row(row, &widths)));
-        }
+        let selected = index == sel;
+        let line = match item {
+            MainItemKind::Profile(idx) => {
+                render_overview_row(app, *idx, &widths, selected, focused)
+            }
+            MainItemKind::Codex(idx) => render_codex_row(&codex[*idx], &widths, selected),
+        };
+        rows.push(ListItem::new(select_line(line, selected, focused, width)));
     }
-
-    draw_following_list(frame, list_area, rows, sel, &app.overview_selector_offset);
+    let render_sel = sel
+        + if codex.is_empty() || sel < claude_count {
+            0
+        } else if claude_count > 0 {
+            2
+        } else {
+            1
+        };
+    draw_following_list(
+        frame,
+        list_area,
+        rows,
+        render_sel,
+        &app.overview_selector_offset,
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -405,20 +412,23 @@ fn overview_header(widths: &OverviewWidths, deepseek: bool) -> Line<'static> {
 
 /// One codex account, in the claude columns: name, plan, 5h, 7d, and a
 /// `↺ N` chip while the account holds a banked usage-limit reset (what
-/// `clauth limit-reset` spends). The cursor and timer slots are kept blank and
-/// no live cell is drawn — this section is read-only, and a timer would
-/// promise a countdown the Overview cannot act on.
-fn render_codex_row(row: &CodexRow, widths: &OverviewWidths) -> Line<'static> {
+/// `clauth limit-reset` spends). The timer slot stays blank and no live cell
+/// is drawn: the Overview cannot refresh or switch a Codex account.
+fn render_codex_row(row: &CodexRow, widths: &OverviewWidths, selected: bool) -> Line<'static> {
     let name_style = if row.active {
         theme::accent().bold()
+    } else if selected {
+        theme::base().bold()
     } else {
         theme::base()
     };
-    // The same slots every list row carries — the 2-cell cursor prefix (blank:
-    // a codex row is never selected), the marker cell and its gap — so the
-    // `×` and the name sit in the claude rows' columns under the header.
+    // The two-cell cursor prefix keeps Codex markers under the Claude column.
     let mut spans = vec![
-        Span::raw("  "),
+        if selected {
+            Span::styled("❯ ", theme::accent().bold())
+        } else {
+            Span::raw("  ")
+        },
         if row.broken {
             Span::styled(theme::dead_credential_glyph(), theme::danger())
         } else {

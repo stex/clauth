@@ -17045,117 +17045,180 @@ fn c_on_the_overview_cycles_the_harness_filter_and_leaves_count_cache_alone() {
     assert_eq!(app.config().state.count_cache, count_cache);
 }
 
-// ── the codex-only view disarms every key bound to the claude selection ──────
+// ── Overview selection across harnesses ─────────────────────────────────────
 
-/// With the claude rows hidden, reorder, cursor, switch and the action menu's
-/// account group would act on a row the screen does not show. The keys are
-/// inert with a toast saying why, the menu opens with its tab-global actions
-/// alone, and every filter that shows the claude rows (`All` and `Claude`
-/// alike) re-arms all four.
 #[test]
-fn the_codex_only_view_disarms_the_claude_selection_keys() {
-    use super::{HarnessFilter, KeyEvent, KeyModifiers, Modal, handle_key};
+fn leaving_overview_does_not_restore_an_old_claude_selection() {
+    use super::{Tab, handle_key};
     let _home = crate::testutil::HomeSandbox::new();
     let mut app = app_with_unlinked_profiles(vec![
         crate::testutil::blank_profile(&crate::profile::ProfileName::from("a")),
         crate::testutil::blank_profile(&crate::profile::ProfileName::from("b")),
     ]);
-    app.tab = Tab::Overview;
-    app.harness_filter = HarnessFilter::Codex;
-    let order = |app: &App| -> Vec<String> {
-        app.config()
-            .profiles
-            .iter()
-            .map(|p| p.name.to_string())
-            .collect()
-    };
-    let state_order = |app: &App| -> Vec<String> {
-        app.config()
-            .state
-            .profiles
-            .iter()
-            .map(|n| n.to_string())
-            .collect()
-    };
-    let shift_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
-
-    handle_key(&mut app, shift_down);
-    assert_eq!(
-        order(&app),
-        ["a", "b"],
-        "reorder is inert while claude rows are hidden"
-    );
-    assert_eq!(state_order(&app), ["a", "b"]);
-    assert_eq!(
-        app.toasts.back().map(|t| t.body.clone()),
-        Some(format!(
-            "claude rows are hidden, press {}",
-            crate::tui::render::prose::key("c")
-        )),
-        "the inert key says why"
-    );
-
+    handle_key(&mut app, crate::testutil::key(KeyCode::Right));
+    assert_eq!(app.tab, Tab::Usage);
     handle_key(&mut app, crate::testutil::key(KeyCode::Down));
-    assert_eq!(app.profile_cursor, 0, "the cursor does not step");
+    assert_eq!(app.profile_cursor, 1);
+    handle_key(&mut app, crate::testutil::key(KeyCode::Right));
+    assert_eq!(
+        app.profile_cursor, 1,
+        "the Usage selection survives leaving that tab"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Left));
+    assert_eq!(
+        app.profile_cursor, 1,
+        "returning to Usage keeps the selected account"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Left));
+    assert_eq!(
+        app.overview_cursor, 1,
+        "Overview follows the account selected in Usage"
+    );
+}
 
+#[test]
+fn removing_the_selected_codex_account_targets_the_visible_claude_fallback() {
+    use super::{MainItemKind, Modal, handle_key, poll_codex_rows};
+    let _home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_codex_roster(&["cx1"]);
+    let mut app = app_with_unlinked_profiles(vec![
+        crate::testutil::blank_profile(&crate::profile::ProfileName::from("a")),
+        crate::testutil::blank_profile(&crate::profile::ProfileName::from("b")),
+    ]);
+    app.tab = Tab::Overview;
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    assert!(matches!(
+        app.current_main_item(),
+        Some(MainItemKind::Codex(0))
+    ));
+    assert_eq!(app.profile_cursor, 1);
+    crate::testutil::write_codex_roster(&[]);
+    app.last_codex_rows_refresh = None;
+    poll_codex_rows(&mut app);
+    assert!(matches!(
+        app.current_main_item(),
+        Some(MainItemKind::Profile(1))
+    ));
+    handle_key(&mut app, crate::testutil::key(KeyCode::Char('a')));
+    assert!(
+        matches!(app.modals.last(), Some(Modal::ActionMenu(m)) if m.context.as_deref() == Some("b"))
+    );
+    assert_eq!(app.profile_cursor, 1);
+}
+
+#[test]
+fn filtering_a_codex_selection_back_to_claude_targets_the_visible_account() {
+    use super::{MainItemKind, Modal, handle_key};
+    let _home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_codex_roster(&["cx1"]);
+    let mut app = app_with_unlinked_profiles(vec![
+        crate::testutil::blank_profile(&crate::profile::ProfileName::from("a")),
+        crate::testutil::blank_profile(&crate::profile::ProfileName::from("b")),
+    ]);
+    app.tab = Tab::Overview;
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    assert!(matches!(
+        app.current_main_item(),
+        Some(MainItemKind::Codex(0))
+    ));
+    assert_eq!(
+        app.profile_cursor, 1,
+        "b was the last selected Claude account"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Char('c')));
+    assert!(matches!(
+        app.current_main_item(),
+        Some(MainItemKind::Profile(0))
+    ));
+    handle_key(&mut app, crate::testutil::key(KeyCode::Char('a')));
+    assert!(
+        matches!(app.modals.last(), Some(Modal::ActionMenu(m)) if m.context.as_deref() == Some("a"))
+    );
+    assert_eq!(
+        app.profile_cursor, 0,
+        "account actions follow the visible caret"
+    );
+}
+
+#[test]
+fn codex_rows_can_be_selected_without_acting_on_a_claude_account() {
+    use super::{HarnessFilter, KeyEvent, KeyModifiers, MainItemKind, Modal, handle_key};
+    let _home = crate::testutil::HomeSandbox::new();
+    crate::testutil::write_codex_roster(&["cx1", "cx2", "cx3"]);
+    let mut app = app_with_unlinked_profiles(vec![
+        crate::testutil::blank_profile(&crate::profile::ProfileName::from("a")),
+        crate::testutil::blank_profile(&crate::profile::ProfileName::from("b")),
+    ]);
+    app.tab = Tab::Overview;
+    assert_eq!(app.codex_rows.len(), 3, "fixture loaded every codex row");
+    assert_eq!(app.main_items().len(), 5, "all five accounts are reachable");
+
+    for _ in 0..4 {
+        handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    }
+    assert_eq!(app.overview_cursor, 4);
+    assert_eq!(
+        app.current_main_item().map(|item| format!("{item:?}")),
+        Some("Codex(2)".to_string())
+    );
+    let before = app.config().state.profiles.clone();
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
     handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
     assert_eq!(
-        app.config().state.active_profile,
-        None,
-        "enter switches nothing"
+        app.config().state.profiles,
+        before,
+        "codex does not reorder claude"
     );
-    assert!(app.modals.is_empty(), "enter pushes no confirm");
-
+    assert!(app.modals.is_empty(), "codex does not open a claude switch");
+    assert!(
+        app.toasts.is_empty(),
+        "an inert action raises no false filter toast"
+    );
     handle_key(&mut app, crate::testutil::key(KeyCode::Char('a')));
-    let Some(Modal::ActionMenu(menu)) = app.modals.last() else {
-        panic!("`a` opens the tab-global actions");
-    };
-    assert_eq!(
-        (menu.scoped_len, menu.context.as_deref()),
-        (0, None),
-        "no entry acts on the hidden row"
-    );
-    assert_eq!(
-        menu.items.iter().map(|i| i.label).collect::<Vec<_>>(),
-        [
-            "refresh all accounts",
-            "new account",
-            "start daemon",
-            "start shunt"
-        ]
-    );
+    assert!(matches!(app.modals.last(), Some(Modal::ActionMenu(m)) if m.scoped_len == 0));
     app.modals.clear();
 
-    // Every filter showing the claude rows re-arms all four keys; each pass
-    // reorders from cursor 0, so the order flips back and forth.
-    let re_armed = |app: &mut App, filter: HarnessFilter, reordered: [&str; 2]| {
-        app.harness_filter = filter;
-        handle_key(app, shift_down);
-        assert_eq!(order(app), reordered, "{filter:?}: reorder re-armed");
-        assert_eq!(
-            app.profile_cursor, 1,
-            "{filter:?}: the reorder carried the cursor with the row"
-        );
-
-        handle_key(app, crate::testutil::key(KeyCode::Up));
-        assert_eq!(app.profile_cursor, 0, "{filter:?}: cursor re-armed");
-
-        handle_key(app, crate::testutil::key(KeyCode::Enter));
-        assert!(
-            matches!(app.modals.last(), Some(Modal::Confirm(_))),
-            "{filter:?}: enter re-armed: the switch confirm is up"
-        );
-        app.modals.clear();
-
-        handle_key(app, crate::testutil::key(KeyCode::Char('a')));
-        assert!(
-            matches!(app.modals.last(), Some(Modal::ActionMenu(m)) if m.scoped_len == 3),
-            "{filter:?}: `a` re-armed: the menu carries the account's group"
-        );
-        app.modals.clear();
-    };
-    re_armed(&mut app, HarnessFilter::All, ["b", "a"]);
-    re_armed(&mut app, HarnessFilter::Claude, ["a", "b"]);
+    handle_key(&mut app, crate::testutil::key(KeyCode::Char('c')));
+    handle_key(&mut app, crate::testutil::key(KeyCode::Char('c')));
+    assert_eq!(app.harness_filter, HarnessFilter::Codex);
+    assert_eq!(
+        app.overview_cursor, 0,
+        "a hidden selection lands on the first visible row"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Up));
+    assert_eq!(
+        app.overview_cursor, 2,
+        "codex-only navigation wraps to the last row"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Down));
+    assert_eq!(
+        app.overview_cursor, 0,
+        "codex-only navigation wraps to the first row"
+    );
+    assert_eq!(
+        app.current_main_item().map(|item| format!("{item:?}")),
+        Some("Codex(0)".to_string())
+    );
+    assert!(app.toasts.is_empty());
+    handle_key(&mut app, crate::testutil::key(KeyCode::Char('c')));
+    assert_eq!(app.harness_filter, HarnessFilter::All);
+    assert_eq!(
+        app.overview_cursor, 2,
+        "the same codex row remains selected in all view"
+    );
+    handle_key(&mut app, crate::testutil::key(KeyCode::Up));
+    assert_eq!(
+        app.overview_cursor, 1,
+        "claude cursor reaches the second row"
+    );
+    assert!(matches!(
+        app.current_main_item(),
+        Some(MainItemKind::Profile(1))
+    ));
+    handle_key(&mut app, crate::testutil::key(KeyCode::Enter));
+    assert!(matches!(app.modals.last(), Some(Modal::Confirm(_))));
 }
 
 // ── the day-list collision warning ───────────────────────────
@@ -20793,16 +20856,6 @@ fn app_prose_styles_keys_and_commands_on_every_surface() {
         true,
     );
     app.disarm_quit();
-
-    app.harness_filter = super::HarnessFilter::Codex;
-    assert!(super::claude_rows_hidden(&mut app));
-    assert_prose_part(
-        &prose_frame(&app, 120, 30),
-        "rows are hidden, press c",
-        " c",
-        true,
-    );
-    app.toasts.clear();
 
     let heal = super::herdr_check(
         &healthy_herdr_probe(),
