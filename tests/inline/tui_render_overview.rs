@@ -619,6 +619,7 @@ fn canceled_marker_is_dead_first() {
         tier: PlanTier::Free,
         subscription_status: Some("canceled".to_string()),
         codex_plan: None,
+        email: None,
     });
     let mut config = config_with(vec![a], Some("a"), vec![]); // also active
     config.state.auth_broken.push("a".into()); // also auth-broken
@@ -933,6 +934,7 @@ fn disabled_row_dims_its_name_and_keeps_the_real_type_value() {
             tier: crate::usage::PlanTier::Pro,
             subscription_status: None,
             codex_plan: None,
+            email: None,
         });
     }
     let config = config_with(vec![a, b], None, vec![]);

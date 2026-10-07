@@ -1827,6 +1827,7 @@ fn cached_bail_overlays_a_fresh_plan_onto_store_and_disk() {
             tier: PlanTier::Pro,
             subscription_status: None,
             codex_plan: None,
+            email: None,
         }),
         ..Default::default()
     };
@@ -1838,10 +1839,15 @@ fn cached_bail_overlays_a_fresh_plan_onto_store_and_disk() {
         &prior,
     );
 
+    let address = crate::usage::AccountEmail {
+        address: "cloudy@example.com".to_string(),
+        account: crate::profile::AccountId::from("u-1"),
+    };
     let canceled = PlanInfo {
         tier: PlanTier::Free,
         subscription_status: Some("canceled".to_string()),
         codex_plan: None,
+        email: Some(address.clone()),
     };
     apply_outcome(
         FetchOutcome::cached(
@@ -1883,9 +1889,15 @@ fn cached_bail_overlays_a_fresh_plan_onto_store_and_disk() {
         super::USAGE_CACHE_FILE,
     )
     .unwrap();
+    let disk_plan = disk.plan.unwrap();
     assert!(
-        disk.plan.unwrap().is_canceled(),
+        disk_plan.is_canceled(),
         "the flip persists to usage_cache.json for CLI/MCP readers"
+    );
+    assert_eq!(
+        disk_plan.email,
+        Some(address),
+        "the address and its account persist too, for a TUI that hydrates from disk"
     );
 }
 
@@ -1912,6 +1924,7 @@ fn cold_bail_records_a_plan_only_canceled_entry() {
         tier: PlanTier::Free,
         subscription_status: Some("canceled".to_string()),
         codex_plan: None,
+        email: None,
     };
     apply_outcome(
         FetchOutcome::cached(
@@ -1982,6 +1995,7 @@ fn plan_ride_preserves_fetched_at_and_stays_stale_despite_advanced_mtime() {
             tier: PlanTier::Pro,
             subscription_status: None,
             codex_plan: None,
+            email: None,
         }),
         fetched_at: Some(seeded_fetched_at),
         ..Default::default()
@@ -1997,6 +2011,7 @@ fn plan_ride_preserves_fetched_at_and_stays_stale_despite_advanced_mtime() {
         tier: PlanTier::Free,
         subscription_status: Some("canceled".to_string()),
         codex_plan: None,
+        email: None,
     };
     apply_outcome(
         FetchOutcome::cached(
@@ -6336,6 +6351,7 @@ fn pre_rotation_serves_a_live_body() {
             tier: PlanTier::Pro,
             subscription_status: None,
             codex_plan: None,
+            email: None,
         }),
         ..UsageInfo::default()
     };
@@ -6360,6 +6376,7 @@ fn pre_rotation_429_on_a_valid_token_bails_rate_limited_with_plan() {
             tier: PlanTier::Free,
             subscription_status: Some("canceled".to_string()),
             codex_plan: None,
+            email: None,
         }),
     };
     // token_clock_expired == false: a still-valid token's 429 is a pure
@@ -6398,6 +6415,7 @@ fn pre_rotation_429_on_an_expired_token_rotates_and_drops_the_plan() {
             tier: PlanTier::Pro,
             subscription_status: None,
             codex_plan: None,
+            email: None,
         }),
     };
     // token_clock_expired == true: falls through to rotation. The `Rotate`
@@ -8445,6 +8463,7 @@ fn scan_recovery_never_relinks_to_a_canceled_member() {
                 tier: PlanTier::Free,
                 subscription_status: Some("canceled".to_string()),
                 codex_plan: None,
+                email: None,
             }),
             ..Default::default()
         },
@@ -10166,6 +10185,7 @@ fn active_pro_plan() -> crate::usage::PlanInfo {
         tier: crate::usage::PlanTier::Pro,
         subscription_status: Some("active".to_string()),
         codex_plan: None,
+        email: None,
     }
 }
 

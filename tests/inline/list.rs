@@ -48,6 +48,7 @@ fn warm_usage_at(name: &str, five_h: f64, seven_d: f64, fetched_at: Option<u64>)
                 tier: PlanTier::Max(Some(5)),
                 subscription_status: None,
                 codex_plan: None,
+                email: None,
             }),
             five_hour: Some(UsageWindow {
                 utilization: five_h,
@@ -149,6 +150,7 @@ fn write_canceled_cache(name: &str) {
                 tier: PlanTier::Free,
                 subscription_status: Some("canceled".to_string()),
                 codex_plan: None,
+                email: None,
             }),
             ..Default::default()
         },

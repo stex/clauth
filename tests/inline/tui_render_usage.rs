@@ -675,6 +675,7 @@ fn header_lines_plan_shows_a_hybrid_oauth_profiles_fetched_tier() {
             tier: crate::usage::PlanTier::Max(Some(20)),
             subscription_status: None,
             codex_plan: None,
+            email: None,
         }),
         ..Default::default()
     });
@@ -1039,6 +1040,7 @@ fn status_lines_shows_canceled_from_a_prior_sessions_cached_plan() {
             tier: PlanTier::Free,
             subscription_status: Some("canceled".to_string()),
             codex_plan: None,
+            email: None,
         }),
         ..Default::default()
     });
@@ -1096,6 +1098,7 @@ fn status_lines_no_canceled_pill_when_subscription_is_active() {
             tier: PlanTier::Free,
             subscription_status: None,
             codex_plan: None,
+            email: None,
         }),
         ..Default::default()
     });

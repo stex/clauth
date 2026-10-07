@@ -983,6 +983,82 @@ fn plan_from_profile_reads_tier_and_canceled_status() {
     );
 }
 
+/// `/profile`'s `account.email` (the field Claude Code's own profile fetch maps
+/// to its `emailAddress`) caches inside the plan, trimmed and paired with the
+/// same body's `account.uuid`; a blank, null or absent value on either side is
+/// shape drift, never an address, and caches as none.
+#[test]
+fn plan_from_profile_caches_the_account_email_blank_filtered() {
+    let pair = |address: &str, account: &str| {
+        Some(AccountEmail {
+            address: address.to_string(),
+            account: crate::profile::AccountId::from(account),
+        })
+    };
+    let cases = [
+        (
+            r#"{"account":{"uuid":"u-1","email":"cloudy@example.com"}}"#,
+            pair("cloudy@example.com", "u-1"),
+            "a plain address",
+        ),
+        (
+            r#"{"account":{"uuid":" u-1 ","email":"  cloudy@example.com \n"}}"#,
+            pair("cloudy@example.com", "u-1"),
+            "padded values trim",
+        ),
+        (
+            r#"{"account":{"uuid":"u-1","email":"   "}}"#,
+            None,
+            "a blank address",
+        ),
+        (
+            r#"{"account":{"uuid":"u-1","email":""}}"#,
+            None,
+            "an empty address",
+        ),
+        (
+            r#"{"account":{"uuid":"u-1","email":null}}"#,
+            None,
+            "a null address",
+        ),
+        (r#"{"account":{"uuid":"u-1"}}"#, None, "no email field"),
+        (
+            r#"{"account":{"email":"cloudy@example.com"}}"#,
+            None,
+            "no uuid to pair it with",
+        ),
+        (
+            r#"{"account":{"uuid":"  ","email":"cloudy@example.com"}}"#,
+            None,
+            "a blank uuid",
+        ),
+        ("{}", None, "no account object"),
+    ];
+    for (body, expected, case) in cases {
+        let profile: RawProfile = serde_json::from_str(body).expect("fixture parses");
+        assert_eq!(plan_from_profile(&profile).email, expected, "{case}");
+    }
+}
+
+/// A plan with no email writes no `email` key, so the usage cache and history
+/// lines of an account `/profile` reports no address for keep the shape they
+/// had before the field existed; a cache written before it parses as none.
+#[test]
+fn a_plan_without_an_email_keeps_its_cache_shape() {
+    let plan = PlanInfo {
+        tier: PlanTier::Pro,
+        ..PlanInfo::default()
+    };
+    assert_eq!(
+        serde_json::to_string(&plan).expect("plan serializes"),
+        r#"{"tier":"Pro"}"#,
+        "no email key on a plan without one"
+    );
+    let old: PlanInfo = serde_json::from_str(r#"{"tier":"Pro","subscription_status":"active"}"#)
+        .expect("a pre-email cache parses");
+    assert_eq!(old.email, None, "a pre-email cache carries no address");
+}
+
 /// The load-bearing decouple: when `/usage` 429s, `assemble_usage` STILL runs the
 /// `/profile` leg and the error carries the FRESHLY observed plan — never the
 /// stale prior one. Without this a canceled account (whose `/usage` 429s forever)
@@ -994,11 +1070,13 @@ fn a_usage_429_still_surfaces_a_freshly_fetched_plan() {
         tier: PlanTier::Pro,
         subscription_status: None,
         codex_plan: None,
+        email: None,
     };
     let canceled = PlanInfo {
         tier: PlanTier::Free,
         subscription_status: Some("canceled".to_string()),
         codex_plan: None,
+        email: None,
     };
 
     // /profile observed canceled this tick → the 429 carries canceled, not Pro.

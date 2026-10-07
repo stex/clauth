@@ -474,6 +474,22 @@ pub(crate) struct PlanInfo {
     /// Pro". A claude profile never sets it; a codex profile never sets `tier`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) codex_plan: Option<String>,
+    /// `/profile` `account.email` with the `account.uuid` it was read for. It
+    /// arrives in the same body as the tier, so it rides the same hourly
+    /// `/profile` TTL. `None` on a profile with no OAuth login (no `/profile`
+    /// leg), on a codex profile, and until the first `/profile` read after a
+    /// cache that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) email: Option<AccountEmail>,
+}
+
+/// An account's address, paired with the account it belongs to: a plan
+/// carried over from an earlier login keeps its old pair, so a reader checks
+/// `account` against the login's identity anchor before naming anyone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct AccountEmail {
+    pub(crate) address: String,
+    pub(crate) account: AccountId,
 }
 
 impl PlanInfo {
@@ -869,6 +885,8 @@ struct RawProfileAccount {
     #[serde(default)]
     uuid: Option<String>,
     #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
     has_claude_max: bool,
     #[serde(default)]
     has_claude_pro: bool,
@@ -1237,6 +1255,15 @@ fn plan_from_profile(p: &RawProfile) -> PlanInfo {
         subscription_status: org.and_then(|o| o.subscription_status.clone()),
         // The claude leg never reads a codex plan.
         codex_plan: None,
+        email: p.account.as_ref().and_then(|a| {
+            fn present(s: Option<&str>) -> Option<&str> {
+                s.map(str::trim).filter(|s| !s.is_empty())
+            }
+            Some(AccountEmail {
+                address: present(a.email.as_deref())?.to_string(),
+                account: AccountId::from(present(a.uuid.as_deref())?),
+            })
+        }),
     }
 }
 

@@ -55,6 +55,7 @@ fn canceled_usage() -> UsageInfo {
             tier: PlanTier::Free,
             subscription_status: Some("canceled".to_string()),
             codex_plan: None,
+            email: None,
         }),
         ..UsageInfo::default()
     }
@@ -7205,6 +7206,7 @@ fn start_walk_skips_what_the_switch_walk_skips() {
         tier: PlanTier::Free,
         subscription_status: Some("canceled".to_owned()),
         codex_plan: None,
+        email: None,
     });
     start_walk_write_usage("canceled", &canceled_usage);
 

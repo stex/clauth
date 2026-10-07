@@ -9,10 +9,14 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use crate::profile_cache::{ACCOUNT_ID_CACHE_FILE, PROFILE_FETCHED_CACHE_FILE, load_profile_cache};
+
 use super::super::app::{
     App, ConfigDraft, ConfigFocus, ConfigRow, DraftLogin, InputState, MODEL_PRESETS, config_rows,
+    escape_control,
 };
 use super::super::theme;
+use super::format::middle_truncate;
 use super::panes::{
     DETAIL_KEY_GUTTER, DETAIL_KEY_W, DIAG_DISABLED, bold_when, cycle_row_lines,
     draw_scrolled_lines, draw_selector_list, head_cols, help_tooltip_lines, highlight_row,
@@ -151,6 +155,10 @@ struct Snap {
     /// Whether a preserved mint backup sits beside the sidecar — the clear
     /// row's disclosure that a second, restorable credential goes with it.
     has_static_backup: bool,
+    /// The account's email off its cached `/profile` plan, control characters
+    /// escaped; `None` until `/profile` has reported one for the login the
+    /// account holds now (`login_email`).
+    email: Option<String>,
 }
 
 impl Snap {
@@ -200,6 +208,7 @@ impl Snap {
             rolling_token: false,
             rolling_armed: false,
             has_static_backup: false,
+            email: None,
         }
     }
 }
@@ -295,10 +304,27 @@ fn build_snap(app: &App, with_text: bool) -> Snap {
                 rolling_token: matches!(&sidecar, Some((crate::claude::SidecarKind::Rolling, _))),
                 rolling_armed: p.rolling_token,
                 has_static_backup: crate::claude::has_static_backup(&p.name),
+                email: login_email(p),
             }
         }
         None => Snap::blank("settings"),
     }
+}
+
+/// The cached `/profile` address, only while it still belongs to the account's
+/// login: the account holds an OAuth login, the address was read for the
+/// account its identity anchor names (a login install rewrites or removes the
+/// anchor), and no copy-back has replaced the login since the last `/profile`
+/// attempt (a copy-back keeps the anchor and removes the durable stamp until
+/// the next read re-anchors). A plan carried over from an earlier login, here
+/// or in another process, names no one. Read per frame for the selected
+/// profile only (two small files).
+fn login_email(p: &crate::profile::Profile) -> Option<String> {
+    p.credentials.as_ref()?.claude_ai_oauth.as_ref()?;
+    let email = p.usage.as_ref()?.plan.as_ref()?.email.as_ref()?;
+    load_profile_cache::<u64>(&p.name, PROFILE_FETCHED_CACHE_FILE)?;
+    let anchor = load_profile_cache::<crate::profile::AccountId>(&p.name, ACCOUNT_ID_CACHE_FILE)?;
+    (email.account == anchor).then(|| escape_control(&email.address))
 }
 
 fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -465,6 +491,17 @@ fn draw_settings_rows(
         Span::styled(type_value, type_style),
     ]));
 
+    // The address belongs to the OAuth login, so it goes with the `oauth` type
+    // the moment a draft base url turns the account api-typed.
+    if !is_api && let Some(email) = &snap.email {
+        let key = key_cell("email", DETAIL_KEY_W, DETAIL_KEY_GUTTER);
+        let value_w = (inner.width as usize).saturating_sub(key.chars().count());
+        lines.push(Line::from(vec![
+            Span::styled(key, theme::label()),
+            Span::styled(middle_truncate(email, value_w), theme::accent()),
+        ]));
+    }
+
     // Provider row — only for recognised third-party providers. Hidden while a
     // draft empties the base-url buffer (`is_api` tracks the draft live).
     let provider_label = if is_api { snap.provider } else { None };
@@ -491,7 +528,8 @@ fn draw_settings_rows(
     lines.push(Line::from(""));
     // Tracks the absolute line index + buffer + row of the active edit row for
     // cursor placement after rendering. The header block above is variable
-    // (optional status + type + optional provider + optional session + blank),
+    // (optional status + type + optional email + optional provider + optional
+    // session + blank),
     // so the row loop's base index is simply what has been pushed so far.
     let mut edit_caret: Option<(u16, InputState, ConfigRow)> = None;
     let mut line_idx: u16 = lines.len() as u16;

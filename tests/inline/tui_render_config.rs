@@ -583,6 +583,251 @@ fn setup_status_row_renders_only_while_disabled() {
     );
 }
 
+/// Render the Setup header for a blank snapshot carrying `email`, `base_url`
+/// and a long-lived `token` state, at `width` cells.
+fn email_header(
+    email: Option<&str>,
+    base_url: &str,
+    token: Option<crate::claude::SessionTokenStatus>,
+    width: u16,
+) -> (Vec<String>, ratatui::buffer::Buffer) {
+    use crate::profile::{AppConfig, AppState};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut snap = Snap::blank("acct");
+    snap.email = email.map(str::to_string);
+    snap.base_url = base_url.to_string();
+    snap.session_token = token;
+    let app = App::new(AppConfig {
+        state: AppState::default(),
+        profiles: Vec::new(),
+    });
+    let mut term = Terminal::new(TestBackend::new(width, 20)).unwrap();
+    term.draw(|f| draw_settings_rows(f, f.area(), &app, &[], 0, &snap, false))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+    (crate::testutil::buffer_rows(&buf), buf)
+}
+
+/// The Setup header's `email` line: the account's address right under `type`, the key in the static-label style and the value in
+/// accent like `type`'s own, exactly once.
+#[test]
+fn setup_email_row_sits_under_type_in_accent() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let (rows, buf) = email_header(Some("cloudy@example.com"), "", None, 60);
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.contains("cloudy@example.com"))
+            .count(),
+        1,
+        "the address renders exactly once:\n{}",
+        rows.join("\n")
+    );
+    let type_idx = rows
+        .iter()
+        .position(|r| r.starts_with("type"))
+        .unwrap_or_else(|| panic!("type row renders:\n{}", rows.join("\n")));
+    assert_eq!(
+        rows[type_idx + 1].trim_end(),
+        "email           cloudy@example.com",
+        "the email line sits right under type:\n{}",
+        rows.join("\n")
+    );
+    let cell = |x: usize| &buf.content[(type_idx + 1) * 60 + x];
+    assert_eq!(
+        cell(0).style().fg,
+        theme::label().fg,
+        "the key takes the static label color"
+    );
+    assert!(
+        cell(0).style().add_modifier.contains(Modifier::BOLD),
+        "the key takes the static label bold"
+    );
+    assert_eq!(
+        cell(16).style().fg,
+        theme::accent().fg,
+        "the address takes the accent value color"
+    );
+}
+
+/// No address, no line: an account `/profile` never reported one for (or an
+/// unfetched one), and an api-typed account, whose draft base url hides the
+/// line with the `oauth` type it belongs to.
+#[test]
+fn setup_email_row_renders_only_for_a_known_oauth_address() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let (rows, _) = email_header(None, "", None, 60);
+    assert!(
+        !rows.iter().any(|r| r.starts_with("email")),
+        "no cached address renders no line:\n{}",
+        rows.join("\n")
+    );
+    let (rows, _) = email_header(
+        Some("cloudy@example.com"),
+        "https://api.example.com",
+        None,
+        60,
+    );
+    assert!(
+        !rows.iter().any(|r| r.contains("cloudy@example.com")),
+        "an api-typed account renders no address:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// An address wider than the pane keeps both ends around a middle ellipsis,
+/// the shared truncation for identifiers, instead of clipping at the border:
+/// 30 cells less the 16-cell key leave 14, so 7 head + `…` + 6 tail.
+#[test]
+fn a_long_setup_email_keeps_both_ends() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let (rows, _) = email_header(Some("averyveryverylongname@example.com"), "", None, 30);
+    assert!(
+        rows.iter().any(|r| r == "email           averyve…le.com"),
+        "the address middle-truncates to the pane:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// On a long-lived-token account the address keeps its place under `type`,
+/// with the `token` row after it, the order the ruling's preview shows.
+#[test]
+fn setup_email_row_sits_between_type_and_token() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let (rows, _) = email_header(
+        Some("cloudy@example.com"),
+        "",
+        Some(crate::claude::SessionTokenStatus::LongLived(None)),
+        60,
+    );
+    let type_idx = rows
+        .iter()
+        .position(|r| r.starts_with("type"))
+        .unwrap_or_else(|| panic!("type row renders:\n{}", rows.join("\n")));
+    assert!(
+        rows[type_idx + 1].starts_with("email ") && rows[type_idx + 2].starts_with("token "),
+        "type, then email, then token:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// A stored credentials file holding an OAuth pair.
+fn oauth_login() -> crate::profile::ClaudeCredentials {
+    crate::profile::ClaudeCredentials {
+        claude_ai_oauth: Some(crate::profile::OAuthToken {
+            access_token: "acc".to_string(),
+            refresh_token: Some("ref".to_string()),
+            expires_at: None,
+            scopes: None,
+            subscription_type: None,
+            ..crate::profile::OAuthToken::default_extra()
+        }),
+    }
+}
+
+/// `build_snap`'s `email` for one account whose plan carries an address read
+/// for account `u-1`, holding `credentials`, anchored to `anchor`, its
+/// `/profile` stamped, then marked stale by a copy-back when `copied_back`.
+fn snap_email(
+    credentials: Option<crate::profile::ClaudeCredentials>,
+    anchor: Option<&str>,
+    copied_back: bool,
+) -> Option<String> {
+    use crate::profile::{AccountId, AppConfig, AppState, ProfileName};
+    let _home = crate::testutil::HomeSandbox::new();
+    let name = ProfileName::from("acct");
+    let mut profile = crate::testutil::blank_profile(&name);
+    profile.credentials = credentials;
+    crate::profile::save_profile(&profile).expect("save the profile");
+    crate::profile::save_app_state(&AppState {
+        profiles: vec![name.clone()],
+        ..AppState::default()
+    })
+    .expect("save the roster");
+    if let Some(anchor) = anchor {
+        crate::profile_cache::write_profile_cache(
+            &name,
+            crate::profile_cache::ACCOUNT_ID_CACHE_FILE,
+            &AccountId::from(anchor),
+        );
+    }
+    crate::profile_cache::write_profile_cache(
+        &name,
+        crate::profile_cache::PROFILE_FETCHED_CACHE_FILE,
+        &1_u64,
+    );
+    if copied_back {
+        let store = crate::profile::profile_dir(&name)
+            .expect("profile dir")
+            .join(".credentials.json");
+        crate::usage::mark_profile_read_stale(&store);
+    }
+    profile.usage = Some(crate::usage::UsageInfo {
+        plan: Some(crate::usage::PlanInfo {
+            email: Some(crate::usage::AccountEmail {
+                address: "cloudy\u{1b}[2J@example.com".to_string(),
+                account: AccountId::from("u-1"),
+            }),
+            ..crate::usage::PlanInfo::default()
+        }),
+        ..crate::usage::UsageInfo::default()
+    });
+    let app = App::new(AppConfig {
+        state: AppState {
+            profiles: vec![name],
+            ..AppState::default()
+        },
+        profiles: vec![profile],
+    });
+    build_snap(&app, true).email
+}
+
+/// The login's own address reaches the snapshot, its control characters
+/// escaped: it is upstream text bound for the terminal.
+#[test]
+fn snap_email_names_the_logins_own_address_escaped() {
+    assert_eq!(
+        snap_email(Some(oauth_login()), Some("u-1"), false).as_deref(),
+        Some("cloudy\\u{1b}[2J@example.com")
+    );
+}
+
+/// A plan carried over from an earlier login keeps that login's pair, and the
+/// anchor names the login held now: the address names no one.
+#[test]
+fn snap_email_names_no_one_for_another_logins_address() {
+    assert_eq!(snap_email(Some(oauth_login()), Some("u-2"), false), None);
+}
+
+/// No anchor, nothing to tie the address to.
+#[test]
+fn snap_email_names_no_one_without_an_anchor() {
+    assert_eq!(snap_email(Some(oauth_login()), None, false), None);
+}
+
+/// A logged-out account names no one, whatever its cached plan says.
+#[test]
+fn snap_email_names_no_one_on_a_logged_out_account() {
+    assert_eq!(snap_email(None, Some("u-1"), false), None);
+}
+
+/// A copy-back can install another account's login under the same anchor;
+/// its stale mark hides the address until the next `/profile` read.
+#[test]
+fn snap_email_names_no_one_after_a_copy_back() {
+    assert_eq!(snap_email(Some(oauth_login()), Some("u-1"), true), None);
+}
+
+/// A credentials file without an OAuth pair holds no login to name.
+#[test]
+fn snap_email_names_no_one_without_an_oauth_pair() {
+    let empty = crate::profile::ClaudeCredentials {
+        claude_ai_oauth: None,
+    };
+    assert_eq!(snap_email(Some(empty), Some("u-1"), false), None);
+}
+
 // ── CLA-SPLIT: the `token` long-lived-login status row ──────────────────────
 
 // A comfortable horizon is a plain accent value; the last 30 days warn as a
