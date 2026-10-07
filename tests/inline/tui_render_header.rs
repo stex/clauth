@@ -122,13 +122,13 @@ fn gauge_fit_shows_full_name_bar_pct_when_roomy() {
 fn gauge_fit_shrinks_bar_first_before_name() {
     let fit = gauge_fit(23, 8, true);
     assert_eq!(fit.name_w, 8, "name must stay full while bar still shrinks");
-    assert_eq!(fit.bar_cells, 6, "bar must shrink first");
+    assert_eq!(fit.bar_cells, 7, "bar must shrink first");
     assert!(fit.visible);
 }
 
 #[test]
 fn gauge_fit_drops_bar_entirely_before_touching_name() {
-    let fit = gauge_fit(19, 8, true);
+    let fit = gauge_fit(18, 8, true);
     assert_eq!(fit.name_w, 8, "name must not shrink after bar drops");
     assert_eq!(fit.bar_cells, 0, "bar must drop before name trims");
     assert!(fit.visible);
@@ -136,7 +136,7 @@ fn gauge_fit_drops_bar_entirely_before_touching_name() {
 
 #[test]
 fn gauge_fit_truncates_name_only_after_bar_is_already_gone() {
-    let fit = gauge_fit(13, 8, true);
+    let fit = gauge_fit(12, 8, true);
     assert_eq!(fit.bar_cells, 0);
     assert_eq!(fit.name_w, 7);
     assert!(fit.visible);
@@ -170,7 +170,7 @@ fn gauge_fit_provider_profile_never_shows_a_bar() {
 
     let tight = gauge_fit(9, 10, false);
     assert_eq!(tight.bar_cells, 0);
-    assert_eq!(tight.name_w, 7);
+    assert_eq!(tight.name_w, 8);
 
     let dash_only = gauge_fit(1, 10, false);
     assert_eq!(dash_only.name_w, 0);
@@ -213,14 +213,16 @@ fn row1_is_the_live_count_the_gauge_and_the_status_indicator_when_wide() {
     app.tab = Tab::Tokens;
 
     // At 120 the text column is 110 cells: `[ 0 live ] · ` is 13, the gauge's
-    // widest rung 26 (8 name + 2 gap + 10 bar + 2 brackets + ` 42%`), the
-    // indicator 18, and the 53 cells between them are the elastic gap.
+    // widest rung renders 25 (8 name + ` ` + `42%` + ` ` + 12 bracketed bar),
+    // the indicator 18, and the 54 cells between them are the elastic gap. The
+    // fit budgets the pct at 4 (`100%`), so at a two-digit figure one spare
+    // cell falls to the gap.
     let chars: Vec<char> = row_content(&app, 120, 1).chars().collect();
-    let left: String = chars[..39].iter().collect();
-    let gap: String = chars[39..92].iter().collect();
+    let left: String = chars[..38].iter().collect();
+    let gap: String = chars[38..92].iter().collect();
     let dot: String = chars[92..].iter().collect();
     assert_eq!(
-        left, "[ 0 live ] · uwuclxdy  [████░░░░░░] 42%",
+        left, "[ 0 live ] · uwuclxdy 42% [████░░░░░░]",
         "the live count, then the gauge, lead row 1"
     );
     assert!(
@@ -231,8 +233,8 @@ fn row1_is_the_live_count_the_gauge_and_the_status_indicator_when_wide() {
 }
 
 /// The ladder's first rung on the buffer: the bar gives a cell before the name
-/// is touched. The bar at its widest (10 cells) puts the gauge at 26 and needs
-/// a `W - 31 >= 27` budget, so 58 is the first width that holds it.
+/// is touched. The bar at its widest (10 cells) puts the gauge at 25 and needs
+/// a `W - 31 >= 26` budget, so 57 is the first width that holds it.
 #[test]
 fn row1_gauge_shrinks_its_bar_before_it_touches_the_name() {
     let _home = crate::testutil::HomeSandbox::new();
@@ -240,35 +242,37 @@ fn row1_gauge_shrinks_its_bar_before_it_touches_the_name() {
     app.tab = Tab::Tokens;
 
     assert_eq!(
-        row_content(&app, 58, 1).trim_end(),
-        "uwuclxdy  [████░░░░░░] 42%    ● status.claude.ai",
+        row_content(&app, 57, 1).trim_end(),
+        "uwuclxdy 42% [████░░░░░░]    ● status.claude.ai",
         "at its own fit width the bar is full"
     );
     assert_eq!(
-        row_content(&app, 57, 1).trim_end(),
-        "uwuclxdy  [████░░░░░] 42%    ● status.claude.ai",
+        row_content(&app, 56, 1).trim_end(),
+        "uwuclxdy 42% [████░░░░░]    ● status.claude.ai",
         "one column narrower the bar gives a cell and the name stays whole"
     );
 }
 
-/// A provider profile has no usage window, so its gauge is the name and the
-/// 2-cell name gap alone: no bar, no percent, no dash standing in for either.
+/// A provider profile has no usage window, so its gauge is the name and its
+/// 1-cell trailing gap alone: no bar, no percent, no dash standing in for
+/// either. The trailing gap merges into the row's elastic gap, so no string
+/// pin can discriminate its width — the name text is the observable pin.
 #[test]
 fn row1_gauge_for_a_provider_profile_carries_no_bar() {
     let _home = crate::testutil::HomeSandbox::new();
     let mut app = app_with(vec![provider_profile("z.ai")], Some("z.ai"));
     app.tab = Tab::Tokens;
 
-    // 90 - 10 = 80 text cells; the count is 13 of them, the gauge 6, the
-    // indicator 18.
+    // 90 - 10 = 80 text cells; the count is 13 of them, the gauge 5 (`z.ai`
+    // plus its 1-cell trailing gap), the indicator 18.
     let row = row_content(&app, 90, 1);
-    let left: String = row.chars().take(19).collect();
+    let left: String = row.chars().take(17).collect();
     assert_eq!(
-        left, "[ 0 live ] · z.ai  ",
-        "the live count leads, then the gauge: the name and its own gap"
+        left, "[ 0 live ] · z.ai",
+        "the live count leads, then the gauge: the name alone"
     );
-    let rest: String = row.chars().skip(19).collect();
-    let (gap, dot) = rest.split_at(80 - 19 - 18);
+    let rest: String = row.chars().skip(17).collect();
+    let (gap, dot) = rest.split_at(80 - 17 - 18);
     assert!(
         gap.chars().all(|c| c == ' '),
         "the elastic gap carries whitespace alone: {gap:?}"
@@ -314,7 +318,7 @@ fn row1_carries_no_gauge_in_compact_mode_or_without_an_active_profile() {
 }
 
 /// The ladder's tail on the buffer: the bar is already gone, the name holds
-/// while a `W - 31 >= 14` budget remains (14 = 8 name + 2 gap + the percent's
+/// while a `W - 31 >= 13` budget remains (13 = 8 name + ` ` + the percent's
 /// 4 budgeted cells), and one column under it the name clips rather than the
 /// percent.
 #[test]
@@ -324,13 +328,13 @@ fn row1_gauge_falls_to_the_name_and_percent_before_the_name_clips() {
     app.tab = Tab::Tokens;
 
     assert_eq!(
-        row_content(&app, 45, 1).trim_end(),
-        "uwuclxdy  42%    ● status.claude.ai",
-        "45 is the first width whose budget holds the whole name"
+        row_content(&app, 44, 1).trim_end(),
+        "uwuclxdy 42%    ● status.claude.ai",
+        "44 is the first width whose budget holds the whole name"
     );
     assert_eq!(
-        row_content(&app, 44, 1).trim_end(),
-        "uwuclx…  42%    ● status.claude.ai",
+        row_content(&app, 43, 1).trim_end(),
+        "uwuclx… 42%    ● status.claude.ai",
         "one column narrower the name carries its truncation ellipsis"
     );
 }
@@ -399,13 +403,13 @@ fn row1_leads_with_the_fleet_live_count_before_the_gauge() {
     let _home = crate::testutil::HomeSandbox::new();
     let app = app_with_three_live(Tab::Tokens);
 
-    // 120 - 10 = 110 text cells: `[ 3 live ] · ` is 13, the gauge 26, the
-    // indicator 18, and the 53 cells between them are the elastic gap.
+    // 120 - 10 = 110 text cells: `[ 3 live ] · ` is 13, the gauge 25, the
+    // indicator 18, and the 54 cells between them are the elastic gap.
     assert_eq!(
         row_content(&app, 120, 1),
         format!(
-            "[ 3 live ] · uwuclxdy  [████░░░░░░] 42%{}● status.claude.ai",
-            " ".repeat(53)
+            "[ 3 live ] · uwuclxdy 42% [████░░░░░░]{}● status.claude.ai",
+            " ".repeat(54)
         ),
     );
 }
@@ -464,8 +468,8 @@ fn row1_shows_zero_live_so_the_gauge_holds_its_place() {
     }
 }
 
-/// The shed seam: gauge 26 + chip and separator 13 + indicator 18 + reserve 3
-/// = 60 text cells, so 70 is the narrowest width holding the chip, and at 69
+/// The shed seam: gauge 25 + chip and separator 13 + indicator 18 + reserve 3
+/// = 59 text cells, so 69 is the narrowest width holding the chip, and at 68
 /// the chip goes whole with its ` · ` while the gauge keeps its full bar.
 #[test]
 fn row1_sheds_the_live_count_before_the_gauge_or_the_indicator() {
@@ -473,14 +477,14 @@ fn row1_sheds_the_live_count_before_the_gauge_or_the_indicator() {
     let app = app_with_three_live(Tab::Tokens);
 
     assert_eq!(
-        row_content(&app, 70, 1),
-        "[ 3 live ] · uwuclxdy  [████░░░░░░] 42%   ● status.claude.ai",
+        row_content(&app, 69, 1),
+        "[ 3 live ] · uwuclxdy 42% [████░░░░░░]   ● status.claude.ai",
         "at its own fit width the chip renders"
     );
     assert_eq!(
-        row_content(&app, 69, 1),
+        row_content(&app, 68, 1),
         format!(
-            "uwuclxdy  [████░░░░░░] 42%{}● status.claude.ai",
+            "uwuclxdy 42% [████░░░░░░]{}● status.claude.ai",
             " ".repeat(15)
         ),
         "one column narrower the count drops whole, the gauge untouched"
@@ -554,14 +558,14 @@ fn the_live_chip_holds_its_widest_width_so_the_gauge_stays_put() {
     app.set_live_sessions(tally_of(10));
     let at_ten = row_content(&app, 120, 1);
     assert!(
-        at_ten.starts_with("[ 10 live ] · uwuclxdy  [████░░░░░░] 42%"),
+        at_ten.starts_with("[ 10 live ] · uwuclxdy 42% [████░░░░░░]"),
         "ten: {at_ten:?}"
     );
 
     app.set_live_sessions(tally_of(9));
     let at_nine = row_content(&app, 120, 1);
     assert!(
-        at_nine.starts_with("[ 9 live ]  · uwuclxdy  [████░░░░░░] 42%"),
+        at_nine.starts_with("[ 9 live ]  · uwuclxdy 42% [████░░░░░░]"),
         "nine after ten keeps the two-digit width: {at_nine:?}"
     );
     assert_eq!(
@@ -649,7 +653,7 @@ fn an_unread_tally_renders_a_dash_not_a_zero() {
         .skip(10)
         .collect();
     assert!(
-        row1.starts_with("[ — live ] · uwuclxdy  [████░░░░░░] 42%"),
+        row1.starts_with("[ — live ] · uwuclxdy 42% [████░░░░░░]"),
         "{row1:?}"
     );
     let dash = &buf.content[120 + 10 + 2];
@@ -664,6 +668,53 @@ fn an_unread_tally_renders_a_dash_not_a_zero() {
     );
 }
 
+/// The gauge rung's cells by role: the percent leads the bar, both in the util
+/// color (80% → DANGER), the brackets hug the bar as TEXT_DIM chrome,
+/// unbolded; every gap inside the rung is one cell. Pinned per cell off the
+/// theme's own colors.
+#[test]
+fn the_gauge_rung_cells_carry_the_chrome_and_util_roles() {
+    use ratatui::style::Modifier;
+    let _home = crate::testutil::HomeSandbox::new();
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let mut app = app_with(vec![oauth_profile("uwuclxdy", 80.0)], Some("uwuclxdy"));
+    app.tab = Tab::Tokens;
+    let height = header_height(&app);
+    let mut term = Terminal::new(TestBackend::new(120, height)).unwrap();
+    term.draw(|f| {
+        let area = f.area();
+        super::draw(f, area, &app);
+    })
+    .unwrap();
+    let buf = term.backend().buffer().clone();
+    let cell = |col: usize| &buf.content[120 + 10 + 13 + col];
+    let text_of: String = (0..25).map(|c| cell(c).symbol().to_string()).collect();
+    assert_eq!(text_of, "uwuclxdy 80% [████████░░]", "{text_of:?}");
+    let dim = super::theme::text_dim_color();
+    let danger = super::theme::danger_color();
+    for (col, role) in [(13, "open bracket"), (24, "close bracket")] {
+        assert_eq!(cell(col).fg, dim, "{role} renders TEXT_DIM");
+        assert!(
+            !cell(col).modifier.contains(Modifier::BOLD),
+            "{role} carries no bold"
+        );
+    }
+    for col in 9..=11 {
+        assert_eq!(
+            cell(col).fg,
+            danger,
+            "the percent renders the util color at {col}"
+        );
+    }
+    for col in 14..=23 {
+        assert_eq!(
+            cell(col).fg,
+            danger,
+            "the bar renders the util color at {col}"
+        );
+    }
+}
+
 /// The held width counts toward the shed gate: after `10`, a `9` chip still
 /// charges the two-digit width, so it sheds at the width the `10` chip did.
 #[test]
@@ -674,14 +725,14 @@ fn the_held_live_chip_width_is_charged_to_the_shed_gate() {
     app.set_live_sessions(tally_of(10));
     app.set_live_sessions(tally_of(9));
 
-    // gauge 26 + held chip and separator 14 + indicator 18 + reserve 3 = 61.
+    // gauge 25 + held chip and separator 14 + indicator 18 + reserve 3 = 60.
     assert!(
-        row_content(&app, 71, 1).starts_with("[ 9 live ]  · uwuclxdy"),
-        "71 holds the held-width chip"
+        row_content(&app, 70, 1).starts_with("[ 9 live ]  · uwuclxdy"),
+        "70 holds the held-width chip"
     );
     assert!(
-        row_content(&app, 70, 1).starts_with("uwuclxdy  [████░░░░░░] 42%"),
-        "70 sheds it whole, as it shed the `10` chip"
+        row_content(&app, 69, 1).starts_with("uwuclxdy 42%"),
+        "69 sheds it whole, as it shed the `10` chip"
     );
 }
 

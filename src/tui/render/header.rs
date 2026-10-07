@@ -26,16 +26,22 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ── Account gauge ────────────────────────────────────────────────────────
 //
-// `name  [███░░░░░] 38%` for the active profile's 5h window. Collapse
-// ladder sacrifices the bar before the name (bar shrinks → bar drops →
-// name truncates → name drops → hide).
+// `name 38% [███░░░░░]` for the active profile's 5h window — cloudy's pick
+// (2026-10-07): the percent leads the bar inside the gauge rung, single-spaced
+// throughout, a sanctioned house deviation. The bar keeps its sanctioned
+// brackets and they drop with it; the collapse ladder sacrifices the bar
+// before the name (bar shrinks → bar and brackets drop → name truncates →
+// name drops → hide).
 
-const GAUGE_NAME_GAP: usize = 2;
 const GAUGE_BAR_FULL: usize = 10;
 const GAUGE_BAR_MIN: usize = 3;
 const GAUGE_NAME_MAX: usize = 16;
 const GAUGE_NAME_MIN: usize = 3;
 const GAUGE_PCT_W: usize = 4;
+/// Flush bar brackets: `[` + `]`.
+const GAUGE_BAR_CHROME_W: usize = 2;
+/// Every gauge gap — name → percent, percent → bar, bare rung — 1 cell.
+const GAUGE_GAP: usize = 1;
 // ── Account-name pulse ───────────────────────────────────────────────────
 
 const PULSE_SWEEP_MS: u64 = 900;
@@ -85,13 +91,18 @@ fn gauge_tail_w(has_pct: bool) -> usize {
     if has_pct { GAUGE_PCT_W } else { 0 }
 }
 
+/// Whole-gauge width at a rung. While the bar renders, the percent leads it
+/// (`name` pct ` [bar]`, single-spaced); the brackets drop with the bar,
+/// leaving the bare `name` pct rung.
 fn gauge_total_w(name_w: usize, bar_cells: usize, has_pct: bool) -> usize {
     let mut w = gauge_tail_w(has_pct);
     if bar_cells > 0 {
-        w += bar_cells + 2 + 1;
-    }
-    if name_w > 0 {
-        w += name_w + GAUGE_NAME_GAP;
+        w += bar_cells + GAUGE_BAR_CHROME_W + GAUGE_GAP;
+        if name_w > 0 {
+            w += name_w + GAUGE_GAP;
+        }
+    } else if name_w > 0 {
+        w += name_w + GAUGE_GAP;
     }
     w
 }
@@ -132,30 +143,35 @@ fn gauge_fit(avail: usize, name_len: usize, has_pct: bool) -> GaugeFit {
 
 fn gauge_spans(fit: GaugeFit, name: &str, pct: Option<f64>, elapsed_ms: u64) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
-    if fit.name_w > 0 {
-        let (nt, _pad) = fixed_split(name, fit.name_w);
-        let style = Style::default().fg(theme::text_color());
-        spans.extend(pulse_name_spans(&nt, style, elapsed_ms));
-        spans.push(Span::raw("  "));
-    }
+    let push_name = |spans: &mut Vec<Span<'static>>, gap: &'static str| {
+        if fit.name_w > 0 {
+            let (nt, _pad) = fixed_split(name, fit.name_w);
+            let style = Style::default().fg(theme::text_color());
+            spans.extend(pulse_name_spans(&nt, style, elapsed_ms));
+            spans.push(Span::raw(gap));
+        }
+    };
     match pct {
         Some(pct) if fit.bar_cells > 0 => {
             let style = Style::default().fg(theme::util_color(pct));
+            push_name(&mut spans, " ");
+            spans.push(Span::styled(format!("{pct:.0}%"), style));
+            spans.push(Span::raw(" "));
             spans.push(Span::styled("[", theme::dim()));
             spans.push(Span::styled(
                 bar_string_with_cells(pct, fit.bar_cells),
                 style,
             ));
             spans.push(Span::styled("]", theme::dim()));
-            spans.push(Span::styled(format!(" {pct:.0}%"), style));
         }
         Some(pct) => {
+            push_name(&mut spans, " ");
             spans.push(Span::styled(
                 format!("{pct:.0}%"),
                 Style::default().fg(theme::util_color(pct)),
             ));
         }
-        None => {}
+        None => push_name(&mut spans, " "),
     }
     spans
 }
