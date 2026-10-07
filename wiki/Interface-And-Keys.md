@@ -37,7 +37,7 @@ Codex accounts ([Codex](Codex)) sit under the Claude Code rows in a section head
 | <kbd>q</kbd> | step back, or arm quit at the top level; press again to confirm |
 | <kbd>ctrl</kbd>+<kbd>c</kbd> | quit from anywhere |
 
-A descended Usage or Tokens model detail scrolls one line with <kbd>↑</kbd> / <kbd>↓</kbd> and one current viewport with <kbd>PageUp</kbd> / <kbd>PageDown</kbd>; <kbd>esc</kbd> or <kbd>←</kbd> returns to its selector without changing the selected account or model. A scrollbar appears only when content overflows. Toasts stack in the top-right corner, at most three lines each: a longer message ends its third line in `…`.
+A descended Usage or Tokens model detail scrolls one line with <kbd>↑</kbd> / <kbd>↓</kbd> and one current viewport with <kbd>PageUp</kbd> / <kbd>PageDown</kbd>; <kbd>esc</kbd> or <kbd>←</kbd> returns to its selector without changing the selected account or model. Choice dialogs and action menus follow the selected option so it remains visible; an overflowing choice shows a scrollbar. A custom-field overwrite whose consequence cannot fit in the choice dialog opens a confirmation with its full explanation scrollable and cancel selected by default; a fitting choice acts at once. Toasts stack in the top-right corner, at most three lines each: a longer message ends its third line in `…`.
 
 ### Tab-dependent
 
