@@ -276,8 +276,8 @@ Two accounts naming the same day is not rejected: the chain returns to whichever
       note.txt             # the account's free-form note, edited from the usage tab's n key (0600)
       session-token.json   # long-lived setup-token login, when captured
       session-token.static.json # the mint a rolling token superseded, kept for the restore
-      usage_cache.json     # last-known utilization and plan
-      usage_history.jsonl  # 2 days of samples, feeding burn-aware switching
+      usage_cache.json     # last-known utilization, plan and account email
+      usage_history.jsonl  # 2 days of samples (plan and account email included), feeding burn-aware switching
       wallet_history.jsonl # 2 days of balance readings, feeding the wallet-burn rate
       third_party_cache.json
       third_party_auth.json# set while the usage login is expired; a hash, never the credential

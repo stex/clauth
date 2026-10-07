@@ -104,6 +104,7 @@ The account list ends in an action row: `+ new`, which turns this pane into the 
 |-----|------|
 | `status` | read-only, and present only while the account is disabled |
 | `type` | read-only `api` or `oauth`, off the base-url row and tracking what you type into it |
+| `email` | read-only: the address of the account's Claude login, on an `oauth` account once clauth has read it with the plan tier (re-read hourly); hidden after a log out |
 | `provider` | read-only, present only for an endpoint clauth recognises: which provider it typed the account as |
 | `token` | read-only state of a stored long-lived setup token, above the editable rows, in one of eight states. Static: `long-lived · ~Nd left`, `expires in ~Nd` inside a month, `long-lived · no recorded expiry`, and `expired`. Rolling: `rolling · re-stamps in ~Nh`, `rolling · re-stamp due` inside the last hour, `rolling · no recorded expiry`, and `rolling token stalled` once nothing re-stamped it in time. `mis-filled` is neither: the sidecar holds a rotating pair the split cannot use. The charged states carry the fix beneath them ([Configuration](Configuration#account-types)) |
 | `name` | the profile name |
