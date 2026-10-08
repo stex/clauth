@@ -49,9 +49,9 @@ impl BellLatch {
     }
 }
 
-/// The bell's text, shared by the toast and `bell_command`'s `%s`.
+/// The alert's text, shared by the toast and `bell_command`'s `%s`.
 pub(crate) fn message(name: &str, util: f64) -> String {
-    format!("bell: {name} at {}", crate::format::format_pct(util))
+    format!("alert: {name} at {}", crate::format::format_pct(util))
 }
 
 /// Split a `bell_command` template into argv by POSIX quoting rules, then put

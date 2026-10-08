@@ -405,8 +405,9 @@ pub(crate) struct Profile {
     /// windows are ignored here: the account stays in rotation for use with
     /// other models. Default on.
     pub(crate) check_scoped: bool,
-    /// Utilization % at/above which a bell toast fires in the overview tab.
-    /// None = no bell for this profile.
+    /// 5h utilization % at/above which the alert fires: the TUI toast and the
+    /// daemon's `bell_command`.
+    /// None = no alert for this profile.
     pub(crate) bell_threshold: Option<f64>,
     /// USER CHOICE (not the auto-quarantine `AppState::auth_broken`): when
     /// true, this account is invisible to every operational surface — the
@@ -4050,8 +4051,8 @@ fn render_config_toml(profile: &Profile) -> String {
     }
     out.push('\n');
 
-    out.push_str("# 5-hour utilization percentage at/above which clauth fires a bell\n");
-    out.push_str("# notification in the overview tab. Range 0..=100.\n");
+    out.push_str("# 5-hour utilization percentage at/above which clauth alerts: a TUI toast,\n");
+    out.push_str("# plus the daemon's bell_command when one is set. Range 0..=100.\n");
     match profile.bell_threshold {
         Some(v) => out.push_str(&format!("bell_threshold = {v}\n")),
         None => out.push_str("# bell_threshold = 95.0\n"),

@@ -2297,7 +2297,7 @@ fn a_fresh_crossing_rings_the_command_once_across_ticks() {
         rung(),
         [(
             "notify-send %s".to_string(),
-            "bell: alpha at 95%".to_string()
+            "alert: alpha at 95%".to_string()
         )]
     );
 }
@@ -2322,11 +2322,11 @@ fn falling_below_re_arms_the_headless_bell() {
         [
             (
                 "notify-send %s".to_string(),
-                "bell: alpha at 95%".to_string()
+                "alert: alpha at 95%".to_string()
             ),
             (
                 "notify-send %s".to_string(),
-                "bell: alpha at 93%".to_string()
+                "alert: alpha at 93%".to_string()
             ),
         ]
     );
@@ -2366,7 +2366,7 @@ fn a_cached_reading_neither_rings_nor_clears_the_headless_bell() {
         rung(),
         [(
             "notify-send %s".to_string(),
-            "bell: alpha at 95%".to_string()
+            "alert: alpha at 95%".to_string()
         )],
         "the stale 5% kept the bell, so the second fresh 95% stays silent"
     );

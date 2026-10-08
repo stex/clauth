@@ -4,8 +4,8 @@ use super::{BellLatch, command_argv, message};
 
 #[test]
 fn the_message_names_the_account_and_its_trimmed_percent() {
-    assert_eq!(message("work", 95.0), "bell: work at 95%");
-    assert_eq!(message("a.b@c", 95.5), "bell: a.b@c at 95.5%");
+    assert_eq!(message("work", 95.0), "alert: work at 95%");
+    assert_eq!(message("a.b@c", 95.5), "alert: a.b@c at 95.5%");
 }
 
 #[test]
@@ -13,7 +13,7 @@ fn a_fresh_crossing_rings_once_while_it_holds() {
     let mut latch = BellLatch::default();
     assert_eq!(
         latch.observe("alpha", Some(90.0), Some(95.0), true),
-        Some("bell: alpha at 95%".to_string())
+        Some("alert: alpha at 95%".to_string())
     );
     assert!(latch.is_ringing("alpha"));
     assert_eq!(latch.observe("alpha", Some(90.0), Some(97.0), true), None);
@@ -25,7 +25,7 @@ fn reaching_the_threshold_exactly_rings() {
     let mut latch = BellLatch::default();
     assert_eq!(
         latch.observe("alpha", Some(90.0), Some(90.0), true),
-        Some("bell: alpha at 90%".to_string())
+        Some("alert: alpha at 90%".to_string())
     );
 }
 
@@ -37,7 +37,7 @@ fn falling_below_re_arms_the_next_crossing() {
     assert!(!latch.is_ringing("alpha"));
     assert_eq!(
         latch.observe("alpha", Some(90.0), Some(92.0), true),
-        Some("bell: alpha at 92%".to_string())
+        Some("alert: alpha at 92%".to_string())
     );
 }
 
@@ -74,7 +74,7 @@ fn accounts_latch_independently() {
     latch.observe("alpha", Some(90.0), Some(95.0), true);
     assert_eq!(
         latch.observe("beta", Some(50.0), Some(60.0), true),
-        Some("bell: beta at 60%".to_string())
+        Some("alert: beta at 60%".to_string())
     );
     latch.observe("alpha", Some(90.0), Some(1.0), true);
     assert!(!latch.is_ringing("alpha"));
@@ -84,8 +84,8 @@ fn accounts_latch_independently() {
 #[test]
 fn the_message_stays_one_argument() {
     assert_eq!(
-        command_argv("notify-send %s", "bell: work at 95%").unwrap(),
-        ["notify-send", "bell: work at 95%"]
+        command_argv("notify-send %s", "alert: work at 95%").unwrap(),
+        ["notify-send", "alert: work at 95%"]
     );
 }
 
@@ -94,13 +94,13 @@ fn quoted_words_split_by_shell_rules_and_percent_s_substitutes_inside_a_word() {
     assert_eq!(
         command_argv(
             "notify-send 'clauth alert' --body=%s \"two words\"",
-            "bell: w at 9%"
+            "alert: w at 9%"
         )
         .unwrap(),
         [
             "notify-send",
             "clauth alert",
-            "--body=bell: w at 9%",
+            "--body=alert: w at 9%",
             "two words"
         ]
     );
@@ -109,16 +109,16 @@ fn quoted_words_split_by_shell_rules_and_percent_s_substitutes_inside_a_word() {
 #[test]
 fn an_explicit_shell_gets_the_message_inside_its_script() {
     assert_eq!(
-        command_argv("sh -c 'logger %s'", "bell: w at 9%").unwrap(),
-        ["sh", "-c", "logger bell: w at 9%"]
+        command_argv("sh -c 'logger %s'", "alert: w at 9%").unwrap(),
+        ["sh", "-c", "logger alert: w at 9%"]
     );
 }
 
 #[test]
 fn quote_and_dollar_characters_in_the_message_reach_the_program_verbatim() {
     assert_eq!(
-        command_argv("echo %s", "bell: o'k$(x)\"y at 9%").unwrap(),
-        ["echo", "bell: o'k$(x)\"y at 9%"]
+        command_argv("echo %s", "alert: o'k$(x)\"y at 9%").unwrap(),
+        ["echo", "alert: o'k$(x)\"y at 9%"]
     );
 }
 
@@ -164,8 +164,8 @@ fn the_program_runs_with_the_message_as_its_argument() {
         "touch {}",
         shlex::try_quote(dir.path().join("%s").to_str().unwrap()).unwrap()
     );
-    super::run_command(&template, "bell: alpha at 95%").unwrap();
-    let marker = dir.path().join("bell: alpha at 95%");
+    super::run_command(&template, "alert: alpha at 95%").unwrap();
+    let marker = dir.path().join("alert: alpha at 95%");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !marker.exists() {
         assert!(

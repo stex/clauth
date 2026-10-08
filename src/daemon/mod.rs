@@ -1360,7 +1360,7 @@ impl Daemon {
                 continue;
             };
             if let Err(e) = (self.ring_bell)(command, &message) {
-                logline!("clauth daemon: bell for '{}' failed: {e:#}", entry.name);
+                logline!("clauth daemon: alert for '{}' failed: {e:#}", entry.name);
             }
         }
     }
