@@ -506,12 +506,12 @@ pub(crate) fn is_canceled(profile: &Profile) -> bool {
 /// account with no OAuth login behind it, which is what a `claude setup-token`
 /// mint leaves (#110). `/usage` needs that login's `user:profile` scope, so the
 /// scheduler never polls such a member ([`crate::usage::collect_tokens`]) and
-/// the walk, finding no reading, counts it as having headroom and, once it is
-/// active, never switches off it. An api-key account is not this, with or
-/// without an endpoint (the kind the TUI's `chain_would_mix` splits on): it
-/// spends a balance or a provider's own windows, and a window nobody publishes
-/// has no line to cross. Pure (no disk read), so a render path can ask it per
-/// frame.
+/// the walk, finding no reading, counts it as having headroom (see
+/// [`no_usage_hazard`] for what that does once it is active). An api-key
+/// account is not this, with or without an endpoint (the kind the TUI's
+/// `chain_would_mix` splits on): it spends a balance or a provider's own
+/// windows, and a window nobody publishes has no line to cross. Pure (no disk
+/// read), so a render path can ask it per frame.
 pub(crate) fn no_usage_source(profile: &Profile) -> bool {
     profile.is_oauth()
         && profile.api_key.is_none()
@@ -520,6 +520,16 @@ pub(crate) fn no_usage_source(profile: &Profile) -> bool {
             .as_ref()
             .and_then(|c| c.claude_ai_oauth.as_ref())
             .is_none()
+}
+
+/// What a member without a usage source ([`no_usage_source`]) does to the
+/// chain: the walk only reaches it once no freshly read member has room, but
+/// once it is active the scan finds no reading to act on
+/// (`reading_is_actionable`), so only a dead login or the operator moves the
+/// chain off it. Shared by the add confirm and the daemon boot warning so the
+/// copy cannot drift apart.
+pub(crate) fn no_usage_hazard() -> &'static str {
+    "clauth won't switch away from it on its own"
 }
 
 /// Recent burn rate (%/h) for `name`'s 5h window: durable per-profile history
@@ -782,7 +792,7 @@ pub(crate) enum BlockedReason {
     Stale,
     /// No reading at all, on a member clauth cannot measure
     /// ([`no_usage_source`]): the walk counts it as having headroom, so a switch
-    /// here lands blind and nothing switches off it.
+    /// here lands blind and nothing switches off it ([`no_usage_hazard`]).
     /// Lowest rung, because it blocks nothing and every rung above says more.
     /// Like `Stale` it is never fresh, so the walk takes it only in the pass
     /// that accepts any freshness, at its place in that pass's order.
