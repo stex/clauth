@@ -42,7 +42,7 @@ use crate::fallback::{
     DEFAULT_THRESHOLD, MAX_THRESHOLD, MIN_THRESHOLD, SwitchAction, auto_switch_if_needed,
     parse_threshold, threshold_for,
 };
-use crate::format::{format_pct, format_threshold_tokens};
+use crate::format::format_threshold_tokens;
 use crate::harness::Harness;
 use crate::lock::with_state_lock;
 use crate::lockorder::{RankedGuard, RankedMutex};
@@ -2912,9 +2912,8 @@ pub(crate) struct App {
     /// cleared in `switch_tab` when the user visits that tab.
     pub(crate) tab_activity: [Option<ToastKind>; Tab::ALL.len()],
 
-    /// Per-profile flag: has the bell been fired for the current crossing.
-    /// Reset when utilization drops back below threshold.
-    pub(crate) bell_fired: HashMap<String, bool>,
+    /// The 5h bell's latch: which accounts rang for their current crossing.
+    pub(crate) bell_fired: crate::bell::BellLatch,
 
     /// Cached parsed usage history per profile from usage_history.jsonl. The
     /// file itself belongs to the scheduler's fetch path (`apply_outcome`),
@@ -3338,7 +3337,7 @@ impl App {
             bootstrap_active: Arc::new(AtomicBool::new(false)),
             shutting_down: Arc::new(AtomicBool::new(false)),
             tab_activity: [None; Tab::ALL.len()],
-            bell_fired: HashMap::new(),
+            bell_fired: crate::bell::BellLatch::default(),
             history_cache,
             history_fp,
             wallet_cache,
@@ -3798,12 +3797,15 @@ impl App {
                 .profiles
                 .iter()
                 .map(|p| {
+                    // The same reading the daemon's bell judges: a lapsed 5h
+                    // window is no figure, and an aged one is not fresh.
                     let util = p
                         .usage
                         .as_ref()
                         .and_then(|u| u.five_hour.as_ref())
+                        .filter(|w| crate::profile_json::window_row_is_live(w))
                         .map(|u| u.utilization);
-                    let fresh = p.fetch_status == Some(FetchStatus::Fresh);
+                    let fresh = p.fetch_status == Some(FetchStatus::Fresh) && !p.usage_stale;
                     (p.name.to_string(), p.bell_threshold, util, fresh)
                 })
                 .collect::<Vec<_>>();
@@ -3825,27 +3827,9 @@ impl App {
                 .collect::<Vec<_>>();
         }
         for (name, threshold, util, fresh) in bells {
-            // Ring or clear only on a live read — a synthetic/stale window (e.g.
-            // a just-kicked 0%) must not clear a real bell or fire a false one.
-            // Non-fresh profiles keep their prior bell state.
-            if !fresh {
-                continue;
-            }
-            if let Some(t) = threshold
-                && let Some(u) = util
-            {
-                if u >= t {
-                    if !self.bell_fired.contains_key(&name) {
-                        self.toast(
-                            ToastKind::Warning,
-                            format!("bell: {name} at {}", format_pct(u)),
-                        );
-                        self.set_tab_activity(Tab::Overview, ToastKind::Warning);
-                        self.bell_fired.insert(name, true);
-                    }
-                } else {
-                    self.bell_fired.remove(&name);
-                }
+            if let Some(message) = self.bell_fired.observe(&name, threshold, util, fresh) {
+                self.toast(ToastKind::Warning, message);
+                self.set_tab_activity(Tab::Overview, ToastKind::Warning);
             }
         }
 

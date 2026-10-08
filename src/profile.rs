@@ -899,6 +899,13 @@ pub(crate) struct AppState {
     /// [`AppState::walk_order`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) walk_order: Option<WalkOrder>,
+    /// The program the daemon runs when an account's 5h usage crosses its
+    /// `bell_threshold`, `%s` standing for the bell's text; split by POSIX
+    /// quoting rules and run without a shell (`bell::run_command`). `None` =
+    /// no headless bell. Only a hand edit of profiles.toml sets it: no TUI row
+    /// and no API route writes a program to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) bell_command: Option<String>,
     /// Opt-in master switch for spending real money: when on, the auto-switch
     /// chain may pick a member whose subscription windows are spent but whose
     /// account still has pay-as-you-go budget, bounded by that member's
@@ -1267,6 +1274,7 @@ impl Default for AppState {
             auth_broken: Vec::new(),
             burn_aware_switching: false,
             walk_order: None,
+            bell_command: None,
             spend_budget_switching: false,
             switch_off_when_budget_spent: default_switch_off_when_budget_spent(),
             preemptive_rotation: default_preemptive_rotation(),

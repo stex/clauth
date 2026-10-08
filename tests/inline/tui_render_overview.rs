@@ -557,7 +557,7 @@ fn broken_login_marker_outranks_bell_and_active() {
     let mut config = config_with(vec![a], Some("a"), vec![]);
     config.state.auth_broken.push("a".into());
     let mut app = App::new(config);
-    app.bell_fired.insert("a".into(), true);
+    app.bell_fired.observe("a", Some(50.0), Some(60.0), true);
     let widths = OverviewWidths::new(80, &app);
     let line = render_overview_row(&app, 0, &widths, false, true);
     let text = line_text(&line);
@@ -574,7 +574,7 @@ fn bell_marker_shows_when_login_is_fine() {
     let a = profile("a", 95.0, 10.0, 3600);
     let config = config_with(vec![a], None, vec![]);
     let mut app = App::new(config);
-    app.bell_fired.insert("a".into(), true);
+    app.bell_fired.observe("a", Some(50.0), Some(60.0), true);
     let widths = OverviewWidths::new(80, &app);
     let text = line_text(&render_overview_row(&app, 0, &widths, false, true));
     assert!(text.contains('!'), "{text}");
@@ -590,7 +590,7 @@ fn token_danger_marker_outranks_bell_and_active() {
     let a = profile("a", 95.0, 10.0, 3600);
     let config = config_with(vec![a], Some("a"), vec![]); // active
     let mut app = App::new(config);
-    app.bell_fired.insert("a".into(), true); // bell also fired
+    app.bell_fired.observe("a", Some(50.0), Some(60.0), true); // bell also fired
     app.session_tokens
         .insert("a".into(), crate::claude::SessionTokenStatus::NotLongLived);
     let widths = OverviewWidths::new(80, &app);
@@ -624,7 +624,7 @@ fn canceled_marker_is_dead_first() {
     let mut config = config_with(vec![a], Some("a"), vec![]); // also active
     config.state.auth_broken.push("a".into()); // also auth-broken
     let mut app = App::new(config);
-    app.bell_fired.insert("a".into(), true); // bell also fired
+    app.bell_fired.observe("a", Some(50.0), Some(60.0), true); // bell also fired
     let widths = OverviewWidths::new(80, &app);
     let line = render_overview_row(&app, 0, &widths, false, true);
     let text = line_text(&line);
@@ -3247,7 +3247,7 @@ fn bell_outranks_the_peak_marker() {
     let config = config_with(vec![peak_profile("a")], Some("a"), vec![]);
     let mut app = App::new(config);
     app.price_table = Some(windowed_table("00:00", "24:00"));
-    app.bell_fired.insert("a".into(), true);
+    app.bell_fired.observe("a", Some(50.0), Some(60.0), true);
     let widths = OverviewWidths::new(80, &app);
     let text = line_text(&render_overview_row(&app, 0, &widths, false, true));
     assert!(text.contains('!'), "{text}");

@@ -103,7 +103,7 @@ pub(crate) struct LiveSignals<'a> {
     pub(crate) proxies: Option<&'a [ProxySlot]>,
 }
 
-fn fetch_status_str(s: FetchStatus) -> &'static str {
+pub(super) fn fetch_status_str(s: FetchStatus) -> &'static str {
     match s {
         FetchStatus::Fresh => "Fresh",
         FetchStatus::Cached => "Cached",

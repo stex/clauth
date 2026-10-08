@@ -573,7 +573,7 @@ fn render_overview_row(
     } else if token_danger {
         spans.push(Span::styled("⊘", hue(theme::danger())));
         spans.push(Span::raw(" "));
-    } else if app.bell_fired.contains_key(profile.name.as_str()) {
+    } else if app.bell_fired.is_ringing(profile.name.as_str()) {
         spans.push(Span::styled("!", hue(theme::danger())));
         spans.push(Span::raw(" "));
     } else if active {

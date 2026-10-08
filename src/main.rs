@@ -1,5 +1,6 @@
 mod actions;
 mod alibaba_login;
+mod bell;
 mod claude;
 mod claude_json;
 mod cli;

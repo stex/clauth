@@ -4521,3 +4521,20 @@ fn a_default_serve_table_carries_a_stray_key() {
         "the carried [serve] table lands after the marker:\n{after}"
     );
 }
+
+// `bell_command` is a hand-edited key: a rewrite keeps the operator's quoting
+// byte for byte.
+#[test]
+fn app_state_bell_command_round_trips_through_a_save() {
+    let _home = HomeSandbox::new();
+    let template = "notify-send 'clauth alert' %s";
+    save_app_state(&AppState {
+        bell_command: Some(template.to_string()),
+        ..AppState::default()
+    })
+    .expect("save state with a bell command");
+    assert_eq!(
+        load_app_state().expect("reload").bell_command.as_deref(),
+        Some(template)
+    );
+}

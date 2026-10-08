@@ -12298,6 +12298,70 @@ fn gate_app(
     (app, history_path)
 }
 
+/// Persist the gate profile and give it an on-disk OAuth cache body at
+/// `GATE_UTIL` fetched `age_ms` ago, so `apply_usage` grades its age.
+fn seed_gate_cache(age_ms: u64) {
+    let name = crate::profile::ProfileName::from(GATE_PROFILE);
+    let mut profile = crate::testutil::blank_profile(&name);
+    profile.bell_threshold = Some(GATE_THRESHOLD);
+    crate::profile::save_profile(&profile).expect("persist gate profile");
+    crate::profile::save_app_state(&crate::profile::AppState {
+        profiles: vec![name.clone()],
+        ..crate::profile::AppState::default()
+    })
+    .expect("persist gate state");
+    let body = UsageInfo {
+        five_hour: Some(UsageWindow {
+            utilization: GATE_UTIL,
+            resets_at: None,
+        }),
+        fetched_at: Some(crate::usage::now_ms().saturating_sub(age_ms)),
+        ..UsageInfo::default()
+    };
+    crate::profile_cache::write_profile_cache(&name, crate::profile_cache::USAGE_CACHE_FILE, &body);
+}
+
+#[test]
+fn apply_usage_skips_the_bell_on_an_aged_reading_under_a_fresh_status() {
+    let _home = crate::testutil::HomeSandbox::new();
+    seed_gate_cache(3_600_000);
+    let (mut app, _) = gate_app(&_home, FetchStatus::Fresh);
+
+    app.apply_usage();
+
+    assert!(
+        !app.bell_fired.is_ringing(GATE_PROFILE),
+        "an hour-old figure is stale even under a Fresh status"
+    );
+}
+
+#[test]
+fn apply_usage_skips_the_bell_on_a_lapsed_five_hour_window() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let (mut app, _) = gate_app(&_home, FetchStatus::Fresh);
+    let lapsed = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    app.usage_store
+        .lock()
+        .expect("usage_store mutex poisoned")
+        .insert(
+            GATE_PROFILE.to_string(),
+            UsageInfo {
+                five_hour: Some(UsageWindow {
+                    utilization: GATE_UTIL,
+                    resets_at: Some(lapsed),
+                }),
+                ..UsageInfo::default()
+            },
+        );
+
+    app.apply_usage();
+
+    assert!(
+        !app.bell_fired.is_ringing(GATE_PROFILE),
+        "a 5h window past its reset is no figure to ring on"
+    );
+}
+
 #[test]
 fn apply_usage_fresh_status_fires_bell_and_never_writes_history() {
     let _home = crate::testutil::HomeSandbox::new();
@@ -12306,10 +12370,9 @@ fn apply_usage_fresh_status_fires_bell_and_never_writes_history() {
 
     app.apply_usage();
 
-    // Bell arm: util(80) >= threshold(70), no prior bell_fired entry → fires.
-    assert_eq!(
-        app.bell_fired.get(GATE_PROFILE),
-        Some(&true),
+    // Bell arm: util(80) >= threshold(70), not yet ringing → fires.
+    assert!(
+        app.bell_fired.is_ringing(GATE_PROFILE),
         "Fresh + util over threshold must ring the bell",
     );
 
@@ -12794,7 +12857,7 @@ fn apply_usage_rate_limited_status_skips_bell_and_history_append() {
     app.apply_usage();
 
     assert!(
-        !app.bell_fired.contains_key(GATE_PROFILE),
+        !app.bell_fired.is_ringing(GATE_PROFILE),
         "RateLimited must not ring the bell (util would have fired on Fresh)",
     );
     let after = std::fs::read_to_string(&history_path).expect("history file still readable");
@@ -12813,7 +12876,7 @@ fn apply_usage_cached_status_skips_bell_and_history_append() {
     app.apply_usage();
 
     assert!(
-        !app.bell_fired.contains_key(GATE_PROFILE),
+        !app.bell_fired.is_ringing(GATE_PROFILE),
         "Cached must not ring the bell (util would have fired on Fresh)",
     );
     let after = std::fs::read_to_string(&history_path).expect("history file still readable");
