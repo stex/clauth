@@ -249,13 +249,21 @@ fn tab_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 ("?", "help"),
             ],
             ConfigFocus::Actions => {
-                // Row-aware: the `model` row cycles on space; env rows edit a value
-                // or open the add-env key editor.
+                // Row-aware: the `model` row cycles on space; `alert at` steps on
+                // `+`/`-`; env rows edit a value or open the add-env key editor.
                 match config_rows(app).get(app.config_action_cursor) {
                     Some(ConfigRow::Model) => &[
                         ("↑↓", "row"),
                         ("space", "cycle"),
                         ("↵", "custom"),
+                        ("a", "actions"),
+                        ("?", "help"),
+                    ],
+                    Some(ConfigRow::BellThreshold) => &[
+                        ("↑↓", "row"),
+                        ("+", "raise"),
+                        ("-", "lower"),
+                        ("↵", "type"),
                         ("a", "actions"),
                         ("?", "help"),
                     ],

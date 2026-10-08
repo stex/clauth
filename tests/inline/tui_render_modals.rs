@@ -682,6 +682,7 @@ fn setup_tab_key_grammar_rows_pin_exact_order_and_copy() {
                 concat!("edit inline; ", key_lit!("↵"), " again saves"),
             ),
             ("space", "cycle the model preset (model row)"),
+            ("+ / -", "step alert at by 5"),
             (
                 "env",
                 concat!("+ add env · ", key_lit!("↵"), " edits a value"),

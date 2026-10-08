@@ -1824,6 +1824,7 @@ fn config_rows_account_actions_tail_matches_runtime_order() {
         [
             ConfigRow::Name,
             ConfigRow::AutoStart,
+            ConfigRow::BellThreshold,
             ConfigRow::BaseUrl,
             ConfigRow::Model,
             ConfigRow::ModelOverrideAdd,
@@ -21376,4 +21377,303 @@ fn repro_104_startup_reconcile_accepts_a_current_static_mint() {
         matches!(signal, Ok(crate::usage::StartupSignal::ReconcileDone)),
         "a live slot holding the current static mint is not a divergence: {signal:?}"
     );
+}
+
+// ── Setup `alert at` row (bell_threshold) ───────────────────────────────────
+
+/// An OAuth account "acct" persisted to disk, the Setup detail pane open on it
+/// and its cursor on the `alert at` row.
+fn alert_app(threshold: Option<f64>) -> App {
+    use super::{ConfigRow, Tab, config_rows, enter_config_detail};
+    let name = crate::profile::ProfileName::from("acct");
+    let mut profile = crate::testutil::blank_profile(&name);
+    profile.bell_threshold = threshold;
+    crate::profile::save_profile(&profile).expect("persist acct");
+    crate::profile::save_app_state(&crate::profile::AppState {
+        profiles: vec![name],
+        ..crate::profile::AppState::default()
+    })
+    .expect("persist state");
+    let mut app = app_with(vec![profile]);
+    app.tab = Tab::Setup;
+    app.profile_cursor = 0;
+    enter_config_detail(&mut app);
+    app.config_action_cursor = config_rows(&app)
+        .iter()
+        .position(|r| *r == ConfigRow::BellThreshold)
+        .expect("the alert row is listed");
+    app
+}
+
+fn saved_bell(app: &App) -> (Option<f64>, Option<f64>) {
+    let name = crate::profile::ProfileName::from("acct");
+    let memory = app.config().find(&name).and_then(|p| p.bell_threshold);
+    let disk = crate::profile::load_profile(&name)
+        .expect("reload acct")
+        .bell_threshold;
+    (memory, disk)
+}
+
+fn cursor_row(app: &App) -> super::ConfigRow {
+    super::config_rows(app)[app.config_action_cursor]
+}
+
+fn type_alert(app: &mut App, value: &str) {
+    super::handle_key(app, key(KeyCode::Enter));
+    for _ in 0..8 {
+        super::handle_key(app, key(KeyCode::Backspace));
+    }
+    for c in value.chars() {
+        super::handle_key(app, key(KeyCode::Char(c)));
+    }
+    super::handle_key(app, key(KeyCode::Enter));
+}
+
+#[test]
+fn the_alert_row_follows_auto_start_on_oauth_and_name_on_api_accounts() {
+    use super::{ConfigRow, config_rows};
+    let _home = crate::testutil::HomeSandbox::new();
+    let oauth = alert_app(None);
+    assert_eq!(
+        config_rows(&oauth)[..3],
+        [
+            ConfigRow::Name,
+            ConfigRow::AutoStart,
+            ConfigRow::BellThreshold
+        ]
+    );
+
+    let mut api = app_with(vec![crate::profile::Profile::new(
+        "api".to_string(),
+        Some("https://api.test".to_string()),
+        Some("k".to_string()),
+    )]);
+    api.profile_cursor = 0;
+    super::enter_config_detail(&mut api);
+    assert_eq!(
+        config_rows(&api)[..3],
+        [
+            ConfigRow::Name,
+            ConfigRow::BellThreshold,
+            ConfigRow::BaseUrl
+        ]
+    );
+
+    let mut new_form = app_with(vec![]);
+    new_form.profile_cursor = 0;
+    assert!(
+        !config_rows(&new_form).contains(&ConfigRow::BellThreshold),
+        "the + new form has no account to ring for yet"
+    );
+}
+
+#[test]
+fn a_typed_alert_saves_to_disk_and_an_empty_one_turns_it_off() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(None);
+    type_alert(&mut app, "90");
+    assert_eq!(saved_bell(&app), (Some(90.0), Some(90.0)));
+    assert_eq!(cursor_row(&app), super::ConfigRow::BellThreshold);
+    assert_eq!(app.config_draft.as_ref().unwrap().active, None);
+    assert_eq!(
+        app.config_draft.as_ref().unwrap().bell_threshold.value,
+        "90"
+    );
+
+    type_alert(&mut app, "");
+    assert_eq!(saved_bell(&app), (None, None));
+    assert_eq!(cursor_row(&app), super::ConfigRow::BellThreshold);
+}
+
+#[test]
+fn an_out_of_range_alert_is_refused_and_the_editor_stays_open() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(Some(80.0));
+    for raw in ["101", "-1", "abc", "NaN"] {
+        type_alert(&mut app, raw);
+        assert_eq!(saved_bell(&app), (Some(80.0), Some(80.0)), "{raw:?}");
+        assert_eq!(
+            app.config_draft.as_ref().unwrap().active,
+            Some(super::ConfigRow::BellThreshold),
+            "{raw:?} keeps the editor open"
+        );
+        super::handle_key(&mut app, key(KeyCode::Esc));
+    }
+    assert_eq!(
+        app.config_draft.as_ref().unwrap().bell_threshold.value,
+        "80"
+    );
+}
+
+#[test]
+fn plus_and_minus_step_the_alert_by_five_from_95_when_off() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(None);
+    let mut seen = Vec::new();
+    for c in ['+', '+', '+', '-', '-'] {
+        super::handle_key(&mut app, key(KeyCode::Char(c)));
+        seen.push(saved_bell(&app));
+    }
+    assert_eq!(
+        seen,
+        [
+            (Some(95.0), Some(95.0)),
+            (Some(100.0), Some(100.0)),
+            (Some(100.0), Some(100.0)),
+            (Some(95.0), Some(95.0)),
+            (Some(90.0), Some(90.0)),
+        ]
+    );
+    assert_eq!(cursor_row(&app), super::ConfigRow::BellThreshold);
+    assert_eq!(
+        app.config_draft.as_ref().unwrap().bell_threshold.value,
+        "90"
+    );
+}
+
+#[test]
+fn minus_stops_at_zero() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(Some(3.0));
+    super::handle_key(&mut app, key(KeyCode::Char('-')));
+    assert_eq!(saved_bell(&app), (Some(0.0), Some(0.0)));
+}
+
+#[test]
+fn plus_on_another_row_leaves_the_alert_alone() {
+    use super::{ConfigRow, config_rows};
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(Some(80.0));
+    app.config_action_cursor = config_rows(&app)
+        .iter()
+        .position(|r| *r == ConfigRow::AutoStart)
+        .unwrap();
+    super::handle_key(&mut app, key(KeyCode::Char('+')));
+    assert_eq!(saved_bell(&app), (Some(80.0), Some(80.0)));
+}
+
+#[test]
+fn a_failed_alert_save_rolls_memory_back_and_says_so() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(Some(80.0));
+    let config_toml = crate::profile::profile_dir(&crate::profile::ProfileName::from("acct"))
+        .unwrap()
+        .join("config.toml");
+    std::fs::remove_file(&config_toml).unwrap();
+    std::fs::create_dir(&config_toml).unwrap();
+
+    super::handle_key(&mut app, key(KeyCode::Char('+')));
+
+    let name = crate::profile::ProfileName::from("acct");
+    assert_eq!(
+        app.config().find(&name).and_then(|p| p.bell_threshold),
+        Some(80.0),
+        "memory keeps what disk still holds"
+    );
+    let last = app.toasts.back().expect("a toast");
+    assert_eq!(last.kind, super::ToastKind::Danger);
+    assert!(
+        last.body.starts_with("alert update failed\n"),
+        "got {:?}",
+        last.body
+    );
+    assert_eq!(
+        app.config_draft.as_ref().unwrap().bell_threshold.value,
+        "80"
+    );
+}
+
+#[test]
+fn a_typed_alert_reseeds_the_buffer_from_what_was_saved() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(None);
+    for (raw, saved, shown) in [
+        ("1e2", 100.0, "100"),
+        ("97.5", 97.5, "97.5"),
+        ("-0", 0.0, "0"),
+        (" 42 ", 42.0, "42"),
+    ] {
+        type_alert(&mut app, raw);
+        assert_eq!(saved_bell(&app), (Some(saved), Some(saved)), "{raw:?}");
+        assert_eq!(
+            app.config_draft.as_ref().unwrap().bell_threshold.value,
+            shown,
+            "{raw:?}"
+        );
+        assert_eq!(app.config_draft.as_ref().unwrap().active, None, "{raw:?}");
+    }
+}
+
+#[test]
+fn minus_from_off_also_starts_at_95_and_the_shifted_keys_step_too() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(None);
+    let mut seen = Vec::new();
+    for c in ['-', '=', '_'] {
+        super::handle_key(&mut app, key(KeyCode::Char(c)));
+        seen.push(saved_bell(&app).1);
+    }
+    assert_eq!(seen, [Some(95.0), Some(100.0), Some(95.0)]);
+}
+
+#[test]
+fn a_step_lands_on_the_hundredths_a_typed_value_carries() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(Some(5.01));
+    super::handle_key(&mut app, key(KeyCode::Char('-')));
+    assert_eq!(saved_bell(&app), (Some(0.01), Some(0.01)));
+    assert_eq!(
+        app.config_draft.as_ref().unwrap().bell_threshold.value,
+        "0.01"
+    );
+}
+
+#[test]
+fn opening_the_alert_editor_reseeds_from_a_reloaded_value() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(Some(80.0));
+    let name = crate::profile::ProfileName::from("acct");
+    app.config().find_mut(&name).unwrap().bell_threshold = Some(50.0);
+    super::handle_key(&mut app, key(KeyCode::Enter));
+    let d = app.config_draft.as_ref().unwrap();
+    assert_eq!(d.active, Some(super::ConfigRow::BellThreshold));
+    assert_eq!(
+        d.bell_threshold.value, "50",
+        "the editor opens on the value a reload brought in"
+    );
+}
+
+#[test]
+fn an_alert_commit_after_the_account_left_ends_the_edit() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(Some(80.0));
+    super::handle_key(&mut app, key(KeyCode::Enter));
+    app.config().profiles.clear();
+    for _ in 0..4 {
+        super::handle_key(&mut app, key(KeyCode::Backspace));
+    }
+    super::handle_key(&mut app, key(KeyCode::Char('9')));
+    super::handle_key(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.config_draft.as_ref().map(|d| d.active), Some(None));
+}
+
+#[test]
+fn the_open_alert_editor_shows_its_range_line_in_the_pane() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut app = alert_app(Some(80.0));
+    let draw = |app: &App| {
+        let mut term = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        term.draw(|f| crate::tui::render::draw(f, app)).unwrap();
+        crate::testutil::buffer_rows(term.backend().buffer())
+    };
+    let range = "└ 0-100 % · empty turns it off";
+    assert!(
+        !draw(&app).iter().any(|r| r.contains(range)),
+        "no range line at rest"
+    );
+    super::handle_key(&mut app, key(KeyCode::Enter));
+    let rows = draw(&app);
+    let field = rows.iter().position(|r| r.contains("alert at")).unwrap();
+    assert!(rows[field + 1].contains(range), "{}", rows.join("\n"));
 }

@@ -944,6 +944,7 @@ fn tab_specific_rows(app: &App) -> Vec<(&'static str, &'static [(&'static str, &
                     concat!("edit inline; ", key_lit!("\u{21b5}"), " again saves"),
                 ),
                 ("space", "cycle the model preset (model row)"),
+                ("+ / -", "step alert at by 5"),
                 (
                     "env",
                     concat!("+ add env · ", key_lit!("\u{21b5}"), " edits a value"),

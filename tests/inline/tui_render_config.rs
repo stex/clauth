@@ -1419,3 +1419,122 @@ fn session_token_fix_lines_style_their_commands() {
         false,
     );
 }
+
+/// The `alert at` row at rest shows the SAVED value (the snapshot), never a
+/// stale draft buffer: the percent in the accent while set, a faint `off`
+/// while not; the editor shows the raw buffer; the hint names each state.
+#[test]
+fn the_alert_row_shows_its_percent_or_off_and_hints_each_state() {
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    let mut snap = Snap::blank("a");
+    let stale_draft = InputState::new("40");
+
+    snap.bell_threshold = "90".into();
+    let set = one_row(
+        ConfigRow::BellThreshold,
+        true,
+        false,
+        None,
+        &snap,
+        &stale_draft,
+    );
+    assert_eq!(set.spans[1].content.trim_end(), "alert at");
+    assert_eq!(set.spans[2].content, "90%");
+    assert_eq!(set.spans[2].style.fg, theme::accent().fg);
+    assert_eq!(
+        row_hint(ConfigRow::BellThreshold, &snap).unwrap(),
+        "alerts once when 5h usage reaches this, again after it drops below"
+    );
+
+    snap.bell_threshold = "97.5".into();
+    let fraction = one_row(
+        ConfigRow::BellThreshold,
+        false,
+        false,
+        None,
+        &snap,
+        &stale_draft,
+    );
+    assert_eq!(fraction.spans[2].content, "97.5%");
+
+    snap.bell_threshold = String::new();
+    let off = one_row(
+        ConfigRow::BellThreshold,
+        false,
+        false,
+        None,
+        &snap,
+        &stale_draft,
+    );
+    assert_eq!(off.spans[2].content, "off");
+    assert_eq!(off.spans[2].style.fg, theme::faint().fg);
+    assert_eq!(
+        row_hint(ConfigRow::BellThreshold, &snap).unwrap(),
+        concat!(
+            "no alert when 5h usage climbs; ",
+            key_lit!("↵"),
+            " or ",
+            key_lit!("+"),
+            " to set one"
+        )
+    );
+
+    let editing = one_row(
+        ConfigRow::BellThreshold,
+        true,
+        true,
+        None,
+        &snap,
+        &InputState::new("8"),
+    );
+    assert_eq!(editing.spans[1].content.trim_end(), "alert at");
+    assert_eq!(
+        editing.spans[2].content, "8",
+        "the editor shows the raw buffer"
+    );
+    assert_eq!(editing.spans[2].style.fg, theme::body().fg);
+    assert_eq!(editing.spans[3].content, " %");
+    assert_eq!(editing.spans[3].style.fg, theme::faint().fg);
+
+    let refused = one_row(
+        ConfigRow::BellThreshold,
+        true,
+        true,
+        None,
+        &snap,
+        &InputState::new("101"),
+    );
+    assert_eq!(refused.spans[2].content, "101");
+    assert_eq!(refused.spans[2].style.fg, theme::danger().fg);
+    assert_eq!(refused.spans[3].style.fg, theme::danger().fg);
+}
+
+/// While typing, the `alert at` field carries its accepted range under it,
+/// faint while the buffer would save and DANGER while it would be refused.
+#[test]
+fn the_alert_editor_names_its_range_and_turns_danger_on_a_refused_buffer() {
+    let _tier = crate::testutil::TierSandbox::new(crate::tui::theme::Tier::Full);
+    for (raw, refused) in [
+        ("90", false),
+        ("", false),
+        ("0", false),
+        ("100", false),
+        ("101", true),
+        ("abc", true),
+        ("-1", true),
+    ] {
+        let lines = alert_range_tooltip(&InputState::new(raw), WIDE);
+        assert_eq!(lines.len(), 1, "{raw:?}");
+        assert_eq!(
+            line_text(&lines[0]),
+            " └ 0-100 % · empty turns it off",
+            "{raw:?}"
+        );
+        let want = if refused {
+            theme::danger().fg
+        } else {
+            theme::faint().fg
+        };
+        assert_eq!(lines[0].spans[1].style.fg, want, "{raw:?}");
+    }
+}

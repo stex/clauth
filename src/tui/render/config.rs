@@ -20,10 +20,10 @@ use super::format::middle_truncate;
 use super::panes::{
     DETAIL_KEY_GUTTER, DETAIL_KEY_W, DIAG_DISABLED, bold_when, cycle_row_lines,
     draw_scrolled_lines, draw_selector_list, head_cols, help_tooltip_lines, highlight_row,
-    key_cell, label_style, master_detail, name_color, picker_row, pill, section_box,
-    section_box_verbatim,
+    invalid_tooltip_lines, key_cell, label_style, master_detail, name_color, picker_row, pill,
+    section_box, section_box_verbatim, value_caret,
 };
-use super::prose::{cmd, cmd_lit};
+use super::prose::{cmd, cmd_lit, key_lit};
 
 pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // +1 for the trailing `+ new` picker row.
@@ -90,6 +90,8 @@ struct Snap {
     /// Sorted `(key, value)` custom env entries — one `EnvEntry` row each.
     env: Vec<(String, String)>,
     auto_start: bool,
+    /// `Profile::bell_threshold` as the `alert at` buffer spells it; empty = off.
+    bell_threshold: String,
     /// `Profile::is_disabled` — drives the `disabled` row's toggle value.
     disabled: bool,
     /// The global active profile — one of the two gates (mirroring
@@ -193,6 +195,7 @@ impl Snap {
             subagent: String::new(),
             env: Vec::new(),
             auto_start: false,
+            bell_threshold: String::new(),
             disabled: false,
             is_active: false,
             has_live_session: false,
@@ -262,6 +265,10 @@ fn build_snap(app: &App, with_text: bool) -> Snap {
                 // they're always populated — even while a draft owns the text fields.
                 env: p.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 auto_start: p.auto_start,
+                bell_threshold: p
+                    .bell_threshold
+                    .map(crate::tui::app::format_weekly_pct)
+                    .unwrap_or_default(),
                 disabled: p.is_disabled(),
                 is_active: cfg.is_active(&p.name),
                 // Read per frame for the selected profile only, same as
@@ -550,6 +557,8 @@ fn draw_settings_rows(
             &input,
             inner.width as usize,
         );
+        let alert_tip = (is_editing && *row == ConfigRow::BellThreshold)
+            .then(|| alert_range_tooltip(&input, inner.width as usize));
         if is_editing {
             edit_caret = Some((line_idx, input, *row));
         }
@@ -571,6 +580,10 @@ fn draw_settings_rows(
             let hint = help_tooltip_lines(&text, inner.width as usize);
             line_idx += hint.len() as u16;
             lines.extend(hint);
+        }
+        if let Some(tip) = alert_tip {
+            line_idx += tip.len() as u16;
+            lines.extend(tip);
         }
         if selected || is_editing {
             focus.1 = line_idx as usize;
@@ -629,6 +642,7 @@ fn snap_value(snap: &Snap, row: ConfigRow) -> &str {
         ConfigRow::HaikuModel => &snap.haiku,
         ConfigRow::FableModel => &snap.fable,
         ConfigRow::SubagentModel => &snap.subagent,
+        ConfigRow::BellThreshold => &snap.bell_threshold,
         ConfigRow::EnvEntry(i) => snap.env.get(i).map(|(_, v)| v.as_str()).unwrap_or(""),
         ConfigRow::AutoStart
         | ConfigRow::ModelOverrideAdd
@@ -646,8 +660,8 @@ fn snap_value(snap: &Snap, row: ConfigRow) -> &str {
 /// Inline help for rows whose labels don't self-describe, phrased for the row's
 /// current value so it re-explains itself as the value changes. `login_is_oauth`
 /// (not the base-url buffer) picks the login/log-out wording — the copy has to
-/// name what ⏎ really does — while `auto_start` / `base_url` flip on their own
-/// value.
+/// name what ⏎ really does — while `auto_start`, `base_url` and `alert at` flip
+/// on their own value.
 fn row_hint(row: ConfigRow, snap: &Snap) -> Option<String> {
     let api_login = !snap.login_is_oauth;
     let hint = match row {
@@ -676,6 +690,16 @@ fn row_hint(row: ConfigRow, snap: &Snap) -> Option<String> {
             "sends a 1-token request to Haiku at every 5h usage reset"
         }
         ConfigRow::AutoStart => "5h usage window stays closed after reset",
+        ConfigRow::BellThreshold if snap.bell_threshold.is_empty() => concat!(
+            "no alert when 5h usage climbs; ",
+            key_lit!("↵"),
+            " or ",
+            key_lit!("+"),
+            " to set one"
+        ),
+        ConfigRow::BellThreshold => {
+            "alerts once when 5h usage reaches this, again after it drops below"
+        }
         ConfigRow::ModelOverrideAdd => "set custom model names on this account",
         ConfigRow::Login if snap.console_login => {
             "log into alibaba console to see this account's usage"
@@ -747,6 +771,17 @@ fn row_hint(row: ConfigRow, snap: &Snap) -> Option<String> {
         | ConfigRow::Create => return None,
     };
     Some(hint.to_string())
+}
+
+/// Sub-line under the `alert at` field while typing: the accepted input,
+/// DANGER while the buffer would be refused (the Fallback `rotate at` twin).
+fn alert_range_tooltip(input: &InputState, width: usize) -> Vec<Line<'static>> {
+    let range = "0-100 % · empty turns it off";
+    if crate::tui::app::parse_bell_threshold(input.trimmed()).is_none() {
+        invalid_tooltip_lines(range, width)
+    } else {
+        help_tooltip_lines(range, width)
+    }
 }
 
 fn detail_row(
@@ -831,6 +866,35 @@ fn detail_row(
                 ("disable account".to_string(), theme::danger().bold())
             };
             Line::from(vec![row_arrow, Span::styled(label, style)])
+        }
+        // A refused buffer renders DANGER beside its range line, and the ` %`
+        // unit trails the native caret: the `rotate at` editor's shape.
+        ConfigRow::BellThreshold if editing => {
+            let invalid = crate::tui::app::parse_bell_threshold(input.trimmed()).is_none();
+            let mut spans = vec![
+                arrow,
+                Span::styled(
+                    key_cell("alert at", DETAIL_KEY_W, DETAIL_KEY_GUTTER),
+                    label_style(selected),
+                ),
+            ];
+            spans.extend(value_caret(input, invalid));
+            spans.push(Span::styled(
+                " %",
+                if invalid {
+                    theme::danger()
+                } else {
+                    theme::faint()
+                },
+            ));
+            Line::from(spans)
+        }
+        ConfigRow::BellThreshold => {
+            let (value, style) = match snap.bell_threshold.as_str() {
+                "" => ("off".to_string(), theme::faint()),
+                pct => (format!("{pct}%"), theme::accent()),
+            };
+            kv_static(arrow, "alert at", value, style, selected)
         }
         ConfigRow::AutoStart => {
             let (value, style) = if snap.auto_start {

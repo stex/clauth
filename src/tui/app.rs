@@ -437,6 +437,9 @@ pub(crate) enum ConfigRow {
     /// OAuth-only auto-start toggle. `config_rows` renders it in the second
     /// slot (right below `Name`); declared here so the enum tracks that order.
     AutoStart,
+    /// `Profile::bell_threshold`, labelled `alert at`: the 5h % the bell rings
+    /// at. ⏎ types a value (empty turns it off), `+`/`-` step it by 5.
+    BellThreshold,
     BaseUrl,
     ApiKey,
     /// Default model (CC `model` setting). Hybrid: space cycles aliases, ⏎ types a custom value.
@@ -496,7 +499,8 @@ impl ConfigRow {
     /// Text rows capture keystrokes and commit on ⏎; the rest act on ⏎. The
     /// `Model` row is hybrid (space cycles, ⏎ opens a custom field), and the env
     /// rows seed their buffer before editing, so all three are driven out of band
-    /// and are deliberately not text rows here.
+    /// and are deliberately not text rows here. `BellThreshold` is a text row
+    /// whose `+`/`-` at rest step it without opening the editor.
     pub(crate) fn is_text(self) -> bool {
         matches!(
             self,
@@ -508,6 +512,7 @@ impl ConfigRow {
                 | ConfigRow::HaikuModel
                 | ConfigRow::FableModel
                 | ConfigRow::SubagentModel
+                | ConfigRow::BellThreshold
         )
     }
 }
@@ -702,6 +707,7 @@ pub(crate) struct ConfigDraft {
     pub(crate) haiku_model: InputState,
     pub(crate) fable_model: InputState,
     pub(crate) subagent_model: InputState,
+    pub(crate) bell_threshold: InputState,
     /// Value buffer for the env entry currently being edited (seeded on entry).
     /// Shared across `EnvEntry` rows since only one is active at a time.
     pub(crate) env_value: InputState,
@@ -755,6 +761,7 @@ impl ConfigDraft {
             ConfigRow::HaikuModel => &self.haiku_model,
             ConfigRow::FableModel => &self.fable_model,
             ConfigRow::SubagentModel => &self.subagent_model,
+            ConfigRow::BellThreshold => &self.bell_threshold,
             ConfigRow::EnvEntry(_) if self.active == Some(row) => &self.env_value,
             ConfigRow::EnvAdd if self.active == Some(ConfigRow::EnvAdd) => &self.env_new_key,
             ConfigRow::AutoStart
@@ -782,6 +789,7 @@ impl ConfigDraft {
             ConfigRow::HaikuModel => &mut self.haiku_model,
             ConfigRow::FableModel => &mut self.fable_model,
             ConfigRow::SubagentModel => &mut self.subagent_model,
+            ConfigRow::BellThreshold => &mut self.bell_threshold,
             ConfigRow::EnvEntry(_) if self.active == Some(row) => &mut self.env_value,
             ConfigRow::EnvAdd if self.active == Some(ConfigRow::EnvAdd) => &mut self.env_new_key,
             ConfigRow::AutoStart
@@ -10178,6 +10186,16 @@ fn handle_config_key(app: &mut App, key: KeyEvent) {
                     };
                 }
                 KeyCode::Enter => run_config_row(app, rows[app.config_action_cursor]),
+                KeyCode::Char('+' | '=')
+                    if rows[app.config_action_cursor] == ConfigRow::BellThreshold =>
+                {
+                    step_bell_threshold(app, 5.0);
+                }
+                KeyCode::Char('-' | '_')
+                    if rows[app.config_action_cursor] == ConfigRow::BellThreshold =>
+                {
+                    step_bell_threshold(app, -5.0);
+                }
                 KeyCode::Char(' ') => {
                     let row = rows[app.config_action_cursor];
                     // Space cycles the `model` alias in place; ⏎ opens its custom
@@ -10234,6 +10252,7 @@ pub(crate) fn config_rows(app: &App) -> Vec<ConfigRow> {
     if !is_api {
         rows.push(ConfigRow::AutoStart);
     }
+    rows.push(ConfigRow::BellThreshold);
     rows.push(ConfigRow::BaseUrl);
     if is_api {
         rows.push(ConfigRow::ApiKey);
@@ -10348,6 +10367,7 @@ pub(crate) fn build_draft_new() -> ConfigDraft {
         haiku_model: InputState::new(""),
         fable_model: InputState::new(""),
         subagent_model: InputState::new(""),
+        bell_threshold: InputState::new(""),
         env_value: InputState::new(""),
         env_new_key: InputState::new(""),
         env_just_added: None,
@@ -10375,6 +10395,11 @@ fn build_draft_existing(app: &App, name: &ProfileName) -> ConfigDraft {
         haiku_model: InputState::new(m.haiku.as_deref().unwrap_or("")),
         fable_model: InputState::new(m.fable.as_deref().unwrap_or("")),
         subagent_model: InputState::new(m.subagent.as_deref().unwrap_or("")),
+        bell_threshold: InputState::new(&row_committed_value(
+            profile,
+            name,
+            ConfigRow::BellThreshold,
+        )),
         env_value: InputState::new(""),
         env_new_key: InputState::new(""),
         env_just_added: None,
@@ -10440,6 +10465,22 @@ fn run_config_row(app: &mut App, row: ConfigRow) {
     }
     // Text rows plus the `model` row's custom field open an inline editor.
     if row.is_text() || row == ConfigRow::Model {
+        // The alert buffer reseeds from the profile as it opens: a reload may
+        // have moved the value since the draft was built.
+        if row == ConfigRow::BellThreshold {
+            let saved = app
+                .config_draft
+                .as_ref()
+                .and_then(|d| d.editing_name.clone())
+                .map(ProfileName::from)
+                .map(|name| {
+                    let cfg = app.config();
+                    row_committed_value(cfg.find(&name), &name, row)
+                });
+            if let (Some(saved), Some(d)) = (saved, app.config_draft.as_mut()) {
+                d.bell_threshold = InputState::new(&saved);
+            }
+        }
         if let Some(d) = app.config_draft.as_mut() {
             d.active = Some(row);
             if let Some(input) = d.field_mut(row) {
@@ -11256,6 +11297,10 @@ fn row_committed_value(profile: Option<&Profile>, name: &ProfileName, row: Confi
         ConfigRow::SubagentModel => profile
             .and_then(|p| p.models.subagent.clone())
             .unwrap_or_default(),
+        ConfigRow::BellThreshold => profile
+            .and_then(|p| p.bell_threshold)
+            .map(format_weekly_pct)
+            .unwrap_or_default(),
         // The saved value of the i-th sorted env entry; reverts a value edit on ⎋.
         ConfigRow::EnvEntry(i) => profile
             .and_then(|p| p.env.values().nth(i).cloned())
@@ -11297,6 +11342,7 @@ fn commit_config_field(app: &mut App, field: ConfigRow) {
         | ConfigRow::SubagentModel => commit_model_field(app, field),
         ConfigRow::EnvEntry(i) => commit_env_value(app, i),
         ConfigRow::EnvAdd => commit_env_new_key(app),
+        ConfigRow::BellThreshold => commit_bell_threshold(app),
         _ => {
             if let Some(d) = app.config_draft.as_mut() {
                 d.active = None;
@@ -11350,6 +11396,110 @@ fn commit_model_field(app: &mut App, field: ConfigRow) {
     }
 }
 
+/// ⏎ on the `alert at` field: a value in `0..=100` sets the bell, an empty one
+/// turns it off; anything else keeps the editor open, as the Fallback card's
+/// threshold editor does.
+fn commit_bell_threshold(app: &mut App) {
+    let raw = app
+        .config_draft
+        .as_ref()
+        .map(|d| d.bell_threshold.trimmed().to_string())
+        .unwrap_or_default();
+    let Some(value) = parse_bell_threshold(&raw) else {
+        return;
+    };
+    write_bell_threshold(app, value);
+}
+
+/// A typed `alert at` value: a number in `0..=100`, or EMPTY, which turns the
+/// bell off. `Some(None)` = off, `Some(Some(v))` = set, `None` = refused.
+pub(crate) fn parse_bell_threshold(raw: &str) -> Option<Option<f64>> {
+    if raw.is_empty() {
+        return Some(None);
+    }
+    crate::fallback::parse_threshold(raw).map(Some)
+}
+
+/// `+`/`-` on the `alert at` row: step by `delta` inside the typed range,
+/// starting from 95% when the alert is off.
+fn step_bell_threshold(app: &mut App, delta: f64) {
+    let Some(name) = app
+        .config_draft
+        .as_ref()
+        .and_then(|d| d.editing_name.clone())
+        .map(ProfileName::from)
+    else {
+        return;
+    };
+    let current = app.config().find(&name).and_then(|p| p.bell_threshold);
+    let next = match current {
+        // Rounded to hundredths, so a step off `5.01` lands on `0.01`, not on
+        // a float tail.
+        Some(v) => (((v + delta) * 100.0).round() / 100.0).clamp(
+            crate::fallback::MIN_THRESHOLD,
+            crate::fallback::MAX_THRESHOLD,
+        ),
+        None => DEFAULT_BELL_THRESHOLD,
+    };
+    write_bell_threshold(app, Some(next));
+}
+
+/// Where `+`/`-` start on an account with no alert: the commented-out default
+/// in a fresh `config.toml`.
+const DEFAULT_BELL_THRESHOLD: f64 = 95.0;
+
+/// Persist the drafted account's alert threshold, rolling memory back on a
+/// failed save, then reseed the row's buffer from what was saved.
+fn write_bell_threshold(app: &mut App, value: Option<f64>) {
+    let Some(name) = app
+        .config_draft
+        .as_ref()
+        .and_then(|d| d.editing_name.clone())
+        .map(ProfileName::from)
+    else {
+        return;
+    };
+    // `-0` saves as `0`, the value a reload reads back.
+    let value = value.map(|v| v + 0.0);
+    let result = {
+        let mut cfg = app.config();
+        match cfg.find_mut(&name) {
+            None => None,
+            Some(profile) => {
+                let before = profile.bell_threshold;
+                profile.bell_threshold = value;
+                let saved = save_profile(profile);
+                if saved.is_err()
+                    && let Some(p) = cfg.find_mut(&name)
+                {
+                    p.bell_threshold = before;
+                }
+                Some(saved)
+            }
+        }
+    };
+    match result {
+        // The account left under the open editor (an outside delete or
+        // rename): end the edit rather than leave a dead ⏎.
+        None => {
+            if let Some(d) = app.config_draft.as_mut() {
+                d.active = None;
+            }
+        }
+        Some(Ok(())) => {
+            let shown = {
+                let cfg = app.config();
+                row_committed_value(cfg.find(&name), &name, ConfigRow::BellThreshold)
+            };
+            if let Some(d) = app.config_draft.as_mut() {
+                d.bell_threshold = InputState::new(&shown);
+                d.active = None;
+            }
+        }
+        Some(Err(e)) => app.toast(ToastKind::Danger, format!("alert update failed\n{e}")),
+    }
+}
+
 /// Fold a trimmed buffer into the matching [`ModelSettings`] field. Empty input
 /// clears it (scalar → `None`).
 fn apply_model_field(models: &mut ModelSettings, field: ConfigRow, raw: &str) {
@@ -11366,6 +11516,7 @@ fn apply_model_field(models: &mut ModelSettings, field: ConfigRow, raw: &str) {
         // `ConfigRow` variant fails the build instead of a silent no-op.
         ConfigRow::Name
         | ConfigRow::AutoStart
+        | ConfigRow::BellThreshold
         | ConfigRow::BaseUrl
         | ConfigRow::ApiKey
         | ConfigRow::ModelOverrideAdd
