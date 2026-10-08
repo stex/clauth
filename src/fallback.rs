@@ -502,6 +502,26 @@ pub(crate) fn is_canceled(profile: &Profile) -> bool {
         .is_some_and(|p| p.is_canceled())
 }
 
+/// True when clauth has no way to read `profile`'s usage: a subscription
+/// account with no OAuth login behind it, which is what a `claude setup-token`
+/// mint leaves (#110). `/usage` needs that login's `user:profile` scope, so the
+/// scheduler never polls such a member ([`crate::usage::collect_tokens`]) and
+/// the walk, finding no reading, counts it as having headroom and, once it is
+/// active, never switches off it. An api-key account is not this, with or
+/// without an endpoint (the kind the TUI's `chain_would_mix` splits on): it
+/// spends a balance or a provider's own windows, and a window nobody publishes
+/// has no line to cross. Pure (no disk read), so a render path can ask it per
+/// frame.
+pub(crate) fn no_usage_source(profile: &Profile) -> bool {
+    profile.is_oauth()
+        && profile.api_key.is_none()
+        && profile
+            .credentials
+            .as_ref()
+            .and_then(|c| c.claude_ai_oauth.as_ref())
+            .is_none()
+}
+
 /// Recent burn rate (%/h) for `name`'s 5h window: durable per-profile history
 /// (`usage_history.jsonl`, a plain disk read — no shared lock, so this is safe
 /// to call without touching the order in `lockorder.rs`, but never while
@@ -760,6 +780,13 @@ pub(crate) enum BlockedReason {
     /// Last read wasn't live (cached / endpoint-429): the numbers are old, so the
     /// chain distrusts this member's apparent headroom.
     Stale,
+    /// No reading at all, on a member clauth cannot measure
+    /// ([`no_usage_source`]): the walk counts it as having headroom, so a switch
+    /// here lands blind and nothing switches off it.
+    /// Lowest rung, because it blocks nothing and every rung above says more.
+    /// Like `Stale` it is never fresh, so the walk takes it only in the pass
+    /// that accepts any freshness, at its place in that pass's order.
+    NoUsage,
 }
 
 /// Seconds until `window` resets, clamped at 0, or `None` when it carries no
@@ -898,6 +925,11 @@ pub(crate) fn health_blocked_reason(
         Some(FetchStatus::Cached | FetchStatus::RateLimited)
     ) {
         return Some(BlockedReason::Stale);
+    }
+    // A reading, from wherever it comes, retires the marker: it names the
+    // missing number, not the missing login.
+    if profile.usage.is_none() && no_usage_source(profile) {
+        return Some(BlockedReason::NoUsage);
     }
     None
 }
@@ -1432,7 +1464,7 @@ fn ordered_walk<'u>(
 /// Why a chain member is ineligible for a START (not a mid-session switch),
 /// rendered as one label per arm. [`start_block`]'s ladder mirrors
 /// [`health_blocked_reason`]'s precedence, minus the rungs a start does not
-/// decide on (budget, staleness) and plus the two a start alone knows
+/// decide on (budget, staleness, no usage) and plus the two a start alone knows
 /// (`NotOauth`, the narrowed per-model demand).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum StartBlock {
