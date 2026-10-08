@@ -144,6 +144,7 @@ clauth keeps no file for the queue: it derives the last open from `usage_history
 | `burn_switch_floor_pct` | float | `98.0` | earliest point burn-aware may switch, 90-100 |
 | `burn_horizon_cap_ms` | int | `60000` | how far ahead burn-aware projects |
 | `walk_order` | string | `chain` | order each accept pass by chain position, the soonest-resetting 7d window or the least-used 7d window: `chain`, `soonest-weekly-reset` or `most-weekly-headroom` |
+| `bell_command` | string | none | the program the daemon runs once each time an account's 5h usage reaches its `bell_threshold` ([below](Configuration#configtoml)), with `%s` standing for the alert's text (`alert: work at 95%`). Split by shell quoting rules and run without a shell: `notify-send 'clauth' %s`, or `sh -c 'logger "$1"' sh %s` when you want a shell (the text stays one argument). A Windows path goes in single quotes (`'C:\tools\notify.exe' %s`). An unbalanced quote, a trailing backslash or an empty value is logged and runs nothing. Hand-edited only; unset means no headless alert |
 | `wrap_off` | bool | `false` | switch off all accounts once the chain is out of quota |
 | `spend_budget_switching` | bool | `false` | master switch for pay-as-you-go fallback |
 | `switch_off_when_budget_spent` | bool | `true` | switch off once the spend ceiling is used up |
@@ -201,7 +202,7 @@ A codex profile's own `config.toml` carries `harness = "codex"` and one optional
 | `preferred` | bool | `false` | the home account clauth returns to once it is clear |
 | `preferred_days` | string array | `[]` | weekdays this account is home, in local time; claims those days against every account, while `preferred` keeps the days no list claims |
 | `max_auto_spend` | float | `0.0` | dollar ceiling on pay-as-you-go fallback |
-| `bell_threshold` | float | none | 5h % that fires a bell toast |
+| `bell_threshold` | float | none | 5h % at which the TUI shows an alert toast and the daemon runs `bell_command`: once per crossing, again only after usage falls back below. The Setup tab's `alert at` row edits it |
 | `rolling_token` | bool | `false` | daemon re-stamps the sidecar from the usage chain; set by `clauth rolling-token`, cleared by `clauth static-token` (bare or `--clear`) |
 | `[env]` | table | `{}` | extra environment variables merged into `settings.json` while active |
 | `[models]` | table | `{}` | `default`, `opus`, `sonnet`, `haiku`, `fable`, `subagent` |
