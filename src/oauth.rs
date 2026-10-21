@@ -171,9 +171,6 @@ pub(crate) const KICK_ANTHROPIC_BETA: &str = "oauth-2025-04-20,interleaved-think
 /// off. Drifts with CC's bundle.
 pub(crate) const KICK_STAINLESS_PACKAGE_VERSION: &str = "0.94.0";
 
-/// Cheapest available model — single token costs ~0.001¢.
-const KICK_MODEL: &str = "claude-haiku-4-5-20251001";
-
 /// OAuth tokens require the "Claude Code" system prefix or the server rejects
 /// the call as an unauthorized non-CC inference.
 pub(crate) const KICK_SYSTEM_PROMPT: &str =
@@ -671,7 +668,7 @@ fn kick(access_token: &str) -> std::result::Result<(), KickError> {
 fn kick_to(url: &str, access_token: &str) -> std::result::Result<(), KickError> {
     await_request_slot(ANTHROPIC_ORIGIN);
     let body = serde_json::to_string(&serde_json::json!({
-        "model": KICK_MODEL,
+        "model": crate::usage::ANTHROPIC_MODEL,
         "max_tokens": 1,
         "system": [{ "type": "text", "text": KICK_SYSTEM_PROMPT }],
         "messages": [{ "role": "user", "content": "x" }],

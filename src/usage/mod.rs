@@ -22,6 +22,11 @@ mod forget;
     )
 )]
 mod inference;
+// The auto-start kick sends the probe's model, so the two cannot drift apart.
+pub(crate) use inference::anthropic::MODEL as ANTHROPIC_MODEL;
+// Test-only: the oauth tests hold the kick's request to the probe's byte for byte.
+#[cfg(test)]
+pub(crate) use inference::anthropic::probe_to as anthropic_probe_to;
 mod scheduler;
 // The partition/tick pair is unreachable in production (`mod scheduler` is
 // private and this re-export is `#[cfg(test)]`); tests in other modules drive

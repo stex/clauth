@@ -2678,6 +2678,28 @@ fn kick_emits_cc_message_wire_shape() {
     assert_eq!(kick_header(&req, "x-claude-code-session-id"), None);
 }
 
+/// The kick and the usage probe send one request, byte for byte: the same
+/// model, the same body, the same headers in the same order. The two are built
+/// apart, so a header added to one and not the other turns this red.
+#[test]
+fn the_kick_and_the_usage_probe_send_the_same_request() {
+    let (base, server) = crate::testutil::serve_endpoints_raw(2, |_, _| (200, "{}".into()));
+    let url = format!("{base}/v1/messages?beta=true");
+    crate::usage::reset_request_slots(); // don't sleep out the 5s host spacing
+    let _ = kick_to(&url, "TESTTOKEN");
+    crate::usage::reset_request_slots();
+    let _ = crate::usage::anthropic_probe_to(&url, "TESTTOKEN");
+    let raw = server.join().expect("listener");
+    assert_eq!(raw.len(), 2, "both sent");
+    assert_eq!(raw[0], raw[1]);
+    assert!(
+        crate::testutil::request_body(&raw[0])
+            .contains(&format!("\"model\":\"{}\"", crate::usage::ANTHROPIC_MODEL)),
+        "{}",
+        raw[0]
+    );
+}
+
 #[test]
 fn kick_beta_is_ccs_full_six_value_list() {
     // Distinct from the single oauth-2025-04-20 on /usage; CC sends 6 on messages.

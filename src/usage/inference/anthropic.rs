@@ -153,7 +153,7 @@ pub(crate) fn probe(access_token: &str) -> ProbeAnswer {
 }
 
 /// [`probe`] against `url`, so a loopback listener can pin what it sends.
-fn probe_to(url: &str, access_token: &str) -> ProbeAnswer {
+pub(crate) fn probe_to(url: &str, access_token: &str) -> ProbeAnswer {
     await_request_slot(ANTHROPIC_ORIGIN);
     let Ok(body) = serde_json::to_string(&serde_json::json!({
         "model": MODEL,
