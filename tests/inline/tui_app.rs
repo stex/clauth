@@ -3594,8 +3594,10 @@ fn seed_oauth_reading(app: &App, names: &[&str]) {
         &app.usage_store,
         &app.usage_status,
         &app.last_fetched,
-        &names.iter().map(|n| n.to_string()).collect::<Vec<_>>(),
-        90_000,
+        &names
+            .iter()
+            .map(|n| (n.to_string(), 90_000))
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -15789,6 +15791,53 @@ fn apply_usage_feeds_usage_stale_off_the_disk_cache_age() {
         !stale_for(body(42.0, "2000-01-01T00:00:00+00:00", None)),
         "an all-lapsed body publishes no row for a marker to qualify"
     );
+}
+
+/// A probed account's figures go stale at its probe interval: 1000 s old is
+/// past the poll's threshold (2 × 5 min + 90 s) but inside a 10 min probe's.
+#[test]
+fn apply_usage_ages_a_probed_account_at_its_probe_interval() {
+    let stale_for = |probe: bool| {
+        let _home = crate::testutil::HomeSandbox::new();
+        let mut profile =
+            crate::testutil::blank_profile(&crate::profile::ProfileName::from(GATE_PROFILE));
+        profile.bell_threshold = None;
+        profile.usage_probe = probe;
+        profile.usage_probe_interval_ms = 600_000;
+        let mut app = app_with(vec![profile]);
+        crate::testutil::register_names(&[GATE_PROFILE]);
+        crate::profile_cache::write_profile_cache(
+            &crate::profile::ProfileName::from(GATE_PROFILE),
+            crate::profile_cache::USAGE_CACHE_FILE,
+            &UsageInfo {
+                five_hour: Some(UsageWindow {
+                    utilization: 42.0,
+                    resets_at: Some("2999-01-01T00:00:00+00:00".to_string()),
+                }),
+                fetched_at: Some(crate::usage::now_ms() - 1_000_000),
+                ..UsageInfo::default()
+            },
+        );
+        app.apply_usage();
+        app.stale_cues.get(GATE_PROFILE).copied().unwrap_or(false)
+    };
+    assert!(!stale_for(true), "probed");
+    assert!(stale_for(false), "not probed");
+}
+
+/// `r` off the Usage tab queues a probed account beside the polled ones; its
+/// list is built in the tick, never in the token list `r` reads.
+#[test]
+fn refresh_all_queues_a_probed_account_too() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let mut probed = crate::testutil::blank_profile(&crate::profile::ProfileName::from("probed"));
+    probed.usage_probe = true;
+    let unprobed = crate::testutil::blank_profile(&crate::profile::ProfileName::from("unprobed"));
+    let app = app_with(vec![probed, unprobed]);
+    app.manual_refresh();
+    let queued = app.refetch_queue.lock().unwrap().clone();
+    assert!(queued.contains("probed"), "{queued:?}");
+    assert!(!queued.contains("unprobed"), "{queued:?}");
 }
 
 /// The read half: the log is written by whichever process holds the fetch lease,
@@ -36945,7 +36994,7 @@ mod usage_picker {
         let (seed_names, entries) = {
             let cfg = app.config();
             (
-                crate::usage::collect_oauth_seed_names(&cfg),
+                crate::usage::collect_oauth_seed_names(&cfg, 300_000),
                 crate::usage::collect_third_party_entries(&cfg.profiles),
             )
         };
@@ -36955,7 +37004,6 @@ mod usage_picker {
             &app.usage_status,
             &app.last_fetched,
             &seed_names,
-            300_000,
         );
         crate::usage::bootstrap_third_party(
             &app.third_party_usage_store,
