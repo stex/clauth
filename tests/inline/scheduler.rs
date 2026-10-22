@@ -21516,6 +21516,43 @@ fn the_seed_carries_a_probed_account_at_its_own_interval() {
     );
 }
 
+/// A reload clears the probe's leftovers only where the switch went off on an
+/// account still without a pair. A pair stored meanwhile, with the switch on or
+/// off, and a profile gone are the reload compare's to forget, and a probe left
+/// on is no change.
+#[test]
+fn only_a_switch_turned_off_without_a_pair_counts_as_a_probe_switched_off() {
+    let probed = |name: &str, on: bool, paired: bool| {
+        let mut p = if paired {
+            oauth_profile_disabled(name, false)
+        } else {
+            crate::testutil::blank_profile(&crate::profile::ProfileName::from(name))
+        };
+        p.usage_probe = on;
+        p
+    };
+    let config = |profiles| crate::profile::AppConfig {
+        state: crate::profile::AppState::default(),
+        profiles,
+    };
+    let before = config(
+        ["off", "paired_on", "paired_off", "gone", "stays"]
+            .iter()
+            .map(|name| probed(name, true, false))
+            .collect(),
+    );
+    let after = config(vec![
+        probed("off", false, false),
+        probed("paired_on", true, true),
+        probed("paired_off", false, true),
+        probed("stays", true, false),
+    ]);
+    assert_eq!(
+        super::probes_switched_off(&before, &after),
+        vec![crate::profile::ProfileName::from("off")]
+    );
+}
+
 /// Re-seeding over a later cadence stamp keeps it, so a `retry-after` wait
 /// outlives switching the probe off and on; over an earlier one, the
 /// reading's own fetch wins.

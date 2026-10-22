@@ -62,12 +62,12 @@ pub(crate) use scheduler::{
     collect_tokens, current_key_rejected_names, decision_fresh_any, end_rotation,
     fill_chain_snapshot_stores, is_idle, is_stuck_rate_limited, is_stuck_streak,
     kick_block_switch_grade, mark_activity, mark_fetch_activity, oauth_without_pair,
-    polled_third_party_names, probe_read_names, profile_credential_fingerprint,
-    queued_switch_away_is_stale, read_skipped_unreadable, reading_is_polled,
-    reseed_keeping_cadence, rotation_into_fetch, selected_activity, selected_next_refresh,
-    spawn_refresher, switch_gate_in_flight, switch_grade_kick_blocked_from_cache,
-    switch_grade_kick_lifts, third_party_credentialed, usage_cache_clock_of, usage_interval_ms,
-    usage_poll_pair, usage_probe_admits,
+    polled_third_party_names, probe_read_names, probes_switched_off,
+    profile_credential_fingerprint, queued_switch_away_is_stale, read_skipped_unreadable,
+    reading_is_polled, reseed_keeping_cadence, rotation_into_fetch, selected_activity,
+    selected_next_refresh, spawn_refresher, switch_gate_in_flight,
+    switch_grade_kick_blocked_from_cache, switch_grade_kick_lifts, third_party_credentialed,
+    usage_cache_clock_of, usage_interval_ms, usage_poll_pair, usage_probe_admits,
 };
 // The queue's history-pair classifier stays module-private — reached by
 // `usage::auto_start_queue`'s own tests through `super::` — while the gap arithmetic is
@@ -127,12 +127,12 @@ pub(crate) use fetch::take_profile_fetch;
 pub(crate) use forget::{
     ForgetPlan, Half, MemoryStores, OAuthIdentity, SnapshotMap, apply_pending_forgets,
     endpoint_identity_plan, epoch_guard, epoch_guard_if_current, epoch_value, forget_disk,
-    forget_disk_plan, forget_memory, new_snapshot, note_forget, note_forget_plan, note_rename,
-    oauth_changed, pairless_identity, read_before_identities, read_codex_for_compare,
-    read_codex_identity, read_oauth_for_compare, read_third_party_for_compare,
-    read_throughput_for_compare, register_memory_stores, reload_and_forget, setup_token_plan,
-    spawn_oauth_identity, third_party_identity, throughput_for_endpoint, throughput_identity,
-    throughput_identity_for_spawn,
+    forget_disk_plan, forget_memory, forget_probe_reading, new_snapshot, note_forget,
+    note_forget_plan, note_rename, oauth_changed, pairless_identity, read_before_identities,
+    read_codex_for_compare, read_codex_identity, read_oauth_for_compare,
+    read_third_party_for_compare, read_throughput_for_compare, register_memory_stores,
+    reload_and_forget, setup_token_plan, spawn_oauth_identity, third_party_identity,
+    throughput_for_endpoint, throughput_identity, throughput_identity_for_spawn,
 };
 #[cfg(test)]
 pub(crate) use forget::{bump_epoch, reset_pending_forgets_for_test, try_lock_epoch_for_test};

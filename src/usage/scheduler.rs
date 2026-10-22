@@ -3626,6 +3626,26 @@ pub(crate) fn probe_read_names(config: &crate::profile::AppConfig) -> HashSet<Pr
         .collect()
 }
 
+/// The accounts the probe read under `before` whose switch `after` turns off,
+/// still with no pair. A pair stored meanwhile, or a profile gone, is the reload
+/// compare's to forget: its `/usage` leg may already have landed a reading.
+pub(crate) fn probes_switched_off(
+    before: &crate::profile::AppConfig,
+    after: &crate::profile::AppConfig,
+) -> Vec<ProfileName> {
+    before
+        .profiles
+        .iter()
+        .filter(|p| usage_probe_admits(p))
+        .filter(|p| {
+            after
+                .find(&p.name)
+                .is_some_and(|now| !now.usage_probe && oauth_without_pair(now))
+        })
+        .map(|p| p.name.clone())
+        .collect()
+}
+
 /// The cadence `p`'s usage is read at: its own probe interval where the probe
 /// reads it, `poll_interval_ms` everywhere else. The startup and stand-down
 /// seeds, the stale cue and `status.json` judge a reading's age by this, so a
@@ -5273,8 +5293,9 @@ fn fetch_probe_due_flagged(
             }
             continue;
         }
-        // A refused token rests until it changes on disk (a re-mint) or a
-        // manual refresh retries it once: the cadence cannot revive it.
+        // A refused token rests until it changes on disk (a re-mint), clauth
+        // restarts or the probe is switched off and on; a manual refresh
+        // retries it once. The cadence cannot revive it.
         if matches!(outcome.status, FetchStatus::AuthExpired)
             && let Ok(mut sup) = state.suppressed_auth_expired.lock()
         {
