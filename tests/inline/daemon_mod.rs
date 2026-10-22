@@ -3025,7 +3025,8 @@ fn warn_if_chain_has_no_usage_source_logs_one_line_naming_them() {
         [
             "clauth daemon: can't read the usage of st-a, st-b. once one is active, clauth \
              won't switch away from it on its own. log in the same accounts with `clauth \
-             login st-a`, `clauth login st-b` so clauth can read their usage"
+             login st-a` and `clauth login st-b`, or turn on their `usage_probe`, so clauth \
+             can read their usage"
         ],
     );
     // One member reads as one account, which is the wording the member card
@@ -3037,7 +3038,7 @@ fn warn_if_chain_has_no_usage_source_logs_one_line_naming_them() {
         [
             "clauth daemon: can't read the usage of st-a. once it's active, clauth won't \
              switch away from it on its own. log in the same account with `clauth login \
-             st-a` so clauth can read its usage"
+             st-a`, or turn on its `usage_probe`, so clauth can read its usage"
         ],
     );
     assert!(
@@ -3079,7 +3080,7 @@ fn warn_if_chain_has_no_usage_source_names_an_active_member_in_the_present() {
         [
             "clauth daemon: can't read the usage of st-a. it's active, and clauth won't \
              switch away from it on its own. log in the same account with `clauth login \
-             st-a` so clauth can read its usage"
+             st-a`, or turn on its `usage_probe`, so clauth can read its usage"
         ],
     );
     // The measurable member being active leaves the forecast wording, and so
@@ -3090,7 +3091,7 @@ fn warn_if_chain_has_no_usage_source_names_an_active_member_in_the_present() {
             [
                 "clauth daemon: can't read the usage of st-a. once it's active, clauth won't \
                  switch away from it on its own. log in the same account with `clauth login \
-                 st-a` so clauth can read its usage"
+                 st-a`, or turn on its `usage_probe`, so clauth can read its usage"
             ],
             "not yet active: {active:?}"
         );
@@ -3133,7 +3134,8 @@ fn warn_if_chain_has_no_usage_source_keeps_its_own_lead_for_a_list() {
         [
             "clauth daemon: can't read the usage of st-a, st-b. 'st-b' is active now, and clauth \
              won't switch away from it on its own. log in the same accounts with `clauth login \
-             st-a`, `clauth login st-b` so clauth can read their usage"
+             st-a` and `clauth login st-b`, or turn on their `usage_probe`, so clauth can read \
+             their usage"
         ],
         "a list names WHICH member is active"
     );
@@ -3143,7 +3145,8 @@ fn warn_if_chain_has_no_usage_source_keeps_its_own_lead_for_a_list() {
             [
                 "clauth daemon: can't read the usage of st-a, st-b. once one is active, clauth \
                  won't switch away from it on its own. log in the same accounts with `clauth \
-                 login st-a`, `clauth login st-b` so clauth can read their usage"
+                 login st-a` and `clauth login st-b`, or turn on their `usage_probe`, so clauth \
+                 can read their usage"
             ],
             "a list that is not active keeps the list forecast: {active:?}"
         );
