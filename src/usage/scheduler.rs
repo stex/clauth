@@ -3614,6 +3614,18 @@ pub(crate) fn usage_probe_admits(p: &crate::profile::Profile) -> bool {
     p.usage_probe && oauth_without_pair(p)
 }
 
+/// The members whose reading is the usage probe's ([`usage_probe_admits`]). A
+/// probe reads the windows off its response headers and nothing of the
+/// usage-credit cap, so a walk for a credit demand takes no freshness from it.
+pub(crate) fn probe_read_names(config: &crate::profile::AppConfig) -> HashSet<ProfileName> {
+    config
+        .profiles
+        .iter()
+        .filter(|p| usage_probe_admits(p))
+        .map(|p| p.name.clone())
+        .collect()
+}
+
 /// The cadence `p`'s usage is read at: its own probe interval where the probe
 /// reads it, `poll_interval_ms` everywhere else. The startup and stand-down
 /// seeds, the stale cue and `status.json` judge a reading's age by this, so a
@@ -6720,12 +6732,13 @@ fn scan_session_switches(
     let skipped_names: HashSet<ProfileName> = read_skipped_unreadable(skipped_unreadable);
     // Snapshot under `config` only, exactly as `scan_auto_switch` does: holding it
     // while taking `usage_store` is the `App::apply_usage` inversion.
-    // Five store/config-snapshot handles ride out of the one config hold; the
+    // Six store/config-snapshot handles ride out of the one config hold; the
     // annotation reads clearer than a one-off struct for them.
     #[allow(clippy::type_complexity)]
-    let (chain, pending, key_rejected, third_party_names, polled): (
+    let (chain, pending, key_rejected, third_party_names, polled, probe_read): (
         Vec<String>,
         Vec<SessionDecision>,
+        HashSet<ProfileName>,
         HashSet<ProfileName>,
         HashSet<ProfileName>,
         HashSet<ProfileName>,
@@ -6787,7 +6800,14 @@ fn scan_session_switches(
                 })
             })
             .collect();
-        (chain, pending, key_rejected, third_party_names, polled)
+        (
+            chain,
+            pending,
+            key_rejected,
+            third_party_names,
+            polled,
+            probe_read_names(&cfg),
+        )
     };
 
     let kick_rejected = kick_rejected_names(kick_blocks, now_epoch_secs());
@@ -6994,6 +7014,15 @@ fn scan_session_switches(
         // insert also marks the session, so the latch adds no term here.
         // `must_leave` above only opens the leave guard.
         let credit_demand = credit_billed_launch || credit_seen;
+        // A probe reading knows nothing of the credit cap, so it carries no
+        // freshness for a session with credit demand. The member the session is
+        // on keeps its own, since there freshness vouches only for that
+        // member's windows, and those the probe reads.
+        if credit_demand {
+            snapshot
+                .fresh
+                .retain(|name| *name == member || !probe_read.contains(name));
+        }
         // `Off` means "sign every account out", which has no per-session form: a
         // session cannot be left credential-less mid-flight and there is no member
         // name to write. It, and a stay-put `None`, leave the row as it stands.

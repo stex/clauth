@@ -4636,6 +4636,173 @@ fn a_fable_session_skips_a_capped_target_for_the_next_member() {
     assert_eq!(decision_of("4242-0"), (Some("c".to_string()), Some(2)));
 }
 
+// ── a probed member under a credit demand ────────────────────────────────────
+//
+// A probe reading carries the 5h and 7d windows and nothing of the credit cap,
+// so for a session with credit demand it carries no freshness: no home pass
+// pulls the session onto a probed member, while the windows it read still
+// count.
+
+/// `session_config_models` over `names` with every member on `launch`, the
+/// `probed` ones the accounts the usage probe reads (a setup token in place of
+/// the fixture's pair) and `home` as the preferred member.
+fn probed_session_config(
+    names: &[&str],
+    launch: &str,
+    probed: &[&str],
+    home: Option<&str>,
+) -> crate::profile::ConfigHandle {
+    let config = session_config_models(names, &[(names[0], launch)], &[]);
+    for p in config.lock().unwrap().profiles.iter_mut() {
+        if probed.contains(&p.name.as_str()) {
+            crate::testutil::make_probed_account(p);
+        }
+        p.preferred = home == Some(p.name.as_str());
+    }
+    config
+}
+
+/// A live row on `member` after a first swap, launched on `families`.
+fn row_on(member: &str, families: &str) -> crate::live_sessions::LiveSession {
+    let mut row = session_row("4242-0", "a");
+    row.current_member = Some(member.to_string());
+    row.launch_families = Some(vec![families.to_string()]);
+    row
+}
+
+/// The swing back of the pendulum: a fable session on `b`, its home `a`
+/// probed, fresh and clear. Nothing on the probe's reading says `a`'s cap is
+/// unspent, so the home pass leaves the session where it is.
+#[test]
+fn a_credit_billed_session_is_not_pulled_home_onto_a_probed_member() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _marker = register_live_row(&row_on("b", "fable"));
+    scan_sessions(
+        &probed_session_config(&["a", "b"], "fable", &["a"], Some("a")),
+        &session_store(&[("a", 10.0), ("b", 10.0)]),
+        &all_fresh(&["a", "b"]),
+    );
+    assert_eq!(decision_of("4242-0"), (None, None));
+}
+
+/// Without credit demand the probe reading counts as any reading does, so the
+/// same home pass brings an opus session back to `a`.
+#[test]
+fn a_session_without_credit_demand_comes_home_to_a_probed_member() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _marker = register_live_row(&row_on("b", "opus"));
+    scan_sessions(
+        &probed_session_config(&["a", "b"], "opus", &["a"], Some("a")),
+        &session_store(&[("a", 10.0), ("b", 10.0)]),
+        &all_fresh(&["a", "b"]),
+    );
+    assert_eq!(decision_of("4242-0"), (Some("a".to_string()), Some(0)));
+}
+
+/// A probed member stays a target the walk can reach for a credit-billed
+/// session, as an unmeasured one does: with no fresh member clear, the
+/// any-clear pass lands on it.
+#[test]
+fn a_credit_billed_session_leaving_a_spent_member_can_land_on_a_probed_one() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _marker = register_live_row(&row_on("b", "fable"));
+    scan_sessions(
+        &probed_session_config(&["a", "b"], "fable", &["a"], None),
+        &session_store(&[("a", 10.0), ("b", 100.0)]),
+        &all_fresh(&["a", "b"]),
+    );
+    assert_eq!(decision_of("4242-0"), (Some("a".to_string()), Some(0)));
+}
+
+/// The windows a probe read still count: a probed member whose 5h window the
+/// probe read spent is no target, where an unmeasured one would read clear.
+#[test]
+fn a_credit_billed_session_does_not_land_on_a_member_its_probe_read_spent() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _marker = register_live_row(&row_on("b", "fable"));
+    scan_sessions(
+        &probed_session_config(&["a", "b"], "fable", &["a"], None),
+        &session_store(&[("a", 100.0), ("b", 100.0)]),
+        &all_fresh(&["a", "b"]),
+    );
+    assert_eq!(decision_of("4242-0"), (None, None));
+}
+
+/// A credit-billed session on a probed member its probe read spent leaves it:
+/// the leave reads the member's windows and its `Fresh` status, never its
+/// place in the walk's fresh list.
+#[test]
+fn a_credit_billed_session_leaves_a_probed_member_its_probe_read_spent() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _marker = register_live_row(&row_on("a", "fable"));
+    scan_sessions(
+        &probed_session_config(&["a", "b"], "fable", &["a"], None),
+        &session_store(&[("a", 100.0), ("b", 10.0)]),
+        &all_fresh(&["a", "b"]),
+    );
+    assert_eq!(decision_of("4242-0"), (Some("b".to_string()), Some(1)));
+}
+
+/// A probed member keeps its freshness while it is the active one: its windows
+/// are what the home pass needs fresh, and the probe reads them. So a
+/// credit-billed session on a probed member comes home to a measured, clear
+/// preferred member.
+#[test]
+fn a_credit_billed_session_on_a_probed_member_comes_home_to_a_measured_one() {
+    let _home = crate::testutil::HomeSandbox::new();
+    let _marker = register_live_row(&row_on("b", "fable"));
+    scan_sessions(
+        &probed_session_config(&["a", "b"], "fable", &["b"], Some("a")),
+        &session_store(&[("a", 10.0), ("b", 10.0)]),
+        &all_fresh(&["a", "b"]),
+    );
+    assert_eq!(decision_of("4242-0"), (Some("a".to_string()), Some(0)));
+}
+
+/// A credit-cap leave reaches a probed member whose `[models]` differ the way
+/// it reaches an unmeasured one: a fresh member further down the chain comes
+/// first, and only once none is clear does the leave land on it.
+#[test]
+fn a_credit_leave_reaches_a_probed_member_whose_models_differ_as_an_unmeasured_one() {
+    for (c_util, target, cursor) in [(10.0, "c", 2), (100.0, "b", 1)] {
+        for b_probed in [true, false] {
+            let _home = crate::testutil::HomeSandbox::new();
+            let mut row = session_row("4242-0", "a");
+            row.launch_families = Some(vec!["fable".to_string()]);
+            row.credit_leave_aware = true;
+            let _marker = register_live_row(&row);
+            let config =
+                session_config_models(&["a", "b", "c"], &[("a", "fable"), ("b", "opus")], &[]);
+            for p in config.lock().unwrap().profiles.iter_mut() {
+                if b_probed && p.name.as_str() == "b" {
+                    crate::testutil::make_probed_account(p);
+                }
+            }
+            let store = credit_store(&["a", "b", "c"], &["a"]);
+            {
+                let mut map = store.lock().unwrap();
+                if let Some(window) = map.get_mut("c").and_then(|c| c.five_hour.as_mut()) {
+                    window.utilization = c_util;
+                }
+                if !b_probed {
+                    map.remove("b");
+                }
+            }
+            let read: &[&str] = if b_probed {
+                &["a", "b", "c"]
+            } else {
+                &["a", "c"]
+            };
+            scan_sessions(&config, &store, &all_fresh(read));
+            assert_eq!(
+                decision_of("4242-0"),
+                (Some(target.to_string()), Some(cursor)),
+                "b probed: {b_probed}, c at {c_util}%"
+            );
+        }
+    }
+}
+
 #[test]
 fn an_opus_session_stays_on_an_account_whose_credit_cap_is_spent() {
     let _home = crate::testutil::HomeSandbox::new();
@@ -21500,4 +21667,103 @@ fn a_stood_down_instance_counts_down_a_spent_probed_account_only_if_it_is_probed
             "refresh_spent_accounts = {refresh_spent}"
         );
     }
+}
+
+// ── a probed home account and the credit cap ────────────────────────────────
+
+/// Drives a fable session that starts on the preferred member `a` through six
+/// scans, a fresh spend-cap 429 before every scan it spends on `a`, and
+/// executes each decision the way the session's watchdog would. Returns how
+/// often the session changed member.
+fn credit_capped_home_moves(cap_in_reading: bool) -> usize {
+    credit_capped_home_moves_launched(cap_in_reading, Some(vec!["fable".to_string()]))
+}
+
+/// [`credit_capped_home_moves`] for a session whose row records
+/// `launch_families`.
+fn credit_capped_home_moves_launched(
+    cap_in_reading: bool,
+    launch_families: Option<Vec<String>>,
+) -> usize {
+    let home = crate::testutil::HomeSandbox::new();
+    let child_pid = 77_777;
+    let config = session_config_models(&["a", "b"], &[("a", "fable")], &[]);
+    {
+        let mut cfg = config.lock().unwrap();
+        let a = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name.as_str() == "a")
+            .unwrap();
+        a.preferred = true;
+        crate::testutil::make_probed_account(a);
+    }
+    // `a` as the probe lands it: windows, no credit block, `Fresh`.
+    let capped: &[&str] = if cap_in_reading { &["a"] } else { &[] };
+    let store = credit_store(&["a", "b"], capped);
+    let status = all_fresh(&["a", "b"]);
+    let mut row = session_row("8100-0", "a");
+    row.claude_pid = Some(child_pid);
+    row.launch_families = launch_families;
+    let _marker_a = register_live_row(&row);
+    let _marker_b = crate::runtime::hold_session_row_marker(
+        &crate::profile::ProfileName::from("b"),
+        false,
+        "8100-0",
+    )
+    .expect("hold b's liveness marker");
+    seed_session_record(&home, "conv-a", child_pid);
+    let proj = home.home().join(".claude/projects/-home-u-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let transcript = proj.join("conv-a.jsonl");
+    let mut on = "a".to_string();
+    let mut moves = 0;
+    for _ in 0..6 {
+        if on == "a" {
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&transcript)
+                .unwrap();
+            writeln!(f, "{}", spend_cap_row(0)).unwrap();
+            drop(f);
+            tail_transcripts();
+        }
+        scan_sessions(&config, &store, &status);
+        let (intended, _) = decision_of("8100-0");
+        if let Some(target) = intended.filter(|t| *t != on) {
+            // Past the in-flight grace, so the next 429 on `a` latches.
+            let at = crate::usage::now_ms() - 40_000;
+            crate::live_sessions::update_as_session("8100-0", |f| {
+                f.set_current_member(target.clone());
+                f.set_last_swap_at(at);
+            })
+            .expect("execute the swap");
+            on = target;
+            moves += 1;
+        }
+    }
+    moves
+}
+
+/// A probe reading carries no credit block, so it cannot say the credits are
+/// free: the home pass must not pull a credit-billed session back onto the
+/// probed member its own 429 just moved it off.
+#[test]
+fn a_spend_cap_429_on_a_probed_home_moves_the_session_once() {
+    assert_eq!(credit_capped_home_moves(false), 1);
+}
+
+/// The control: a reading whose credit block is capped keeps the session off.
+#[test]
+fn a_spend_cap_429_on_a_capped_home_moves_the_session_once() {
+    assert_eq!(credit_capped_home_moves(true), 1);
+}
+
+/// With no launch family on the row, only the session's own 429 gives it
+/// credit demand, and that alone keeps the probed home from pulling it back.
+#[test]
+fn a_spend_cap_429_on_a_probed_home_moves_a_session_of_unknown_launch_once() {
+    assert_eq!(credit_capped_home_moves_launched(false, None), 1);
 }

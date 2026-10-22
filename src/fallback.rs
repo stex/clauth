@@ -1243,7 +1243,9 @@ pub(crate) struct ChainSnapshot {
     /// Members whose last store read was live (`FetchStatus::Fresh`) — the same
     /// freshness `decision_fresh` gates the ACTIVE on. Not config state:
     /// [`snapshot_chain`] leaves it empty and the scheduler's scan fills it from
-    /// the `StatusStore` (like `kick_rejected`). Drives the headroom walk's
+    /// the `StatusStore` (like `kick_rejected`). For a session with credit demand
+    /// the scheduler then drops every probe-read member but the one the session
+    /// is on. Drives the headroom walk's
     /// fresh-PREFERENCE first pass — a PREFERENCE, never a gate: when no fresh
     /// member has headroom the walk still accepts a stale-but-unexhausted one,
     /// so an exhausted active never loses its escape (2026-06-28 target
@@ -1888,17 +1890,20 @@ pub(crate) fn start_block(
 
 /// One chain member as the start walk judged it, with enough to render the
 /// `--explain` row: the verdict, the cache age (for the staleness cell), whether
-/// that age reads stale, and whether the reading is DATED and fresh (pass one's
-/// preference). `demand` is the member's own model-family demand — the one its
-/// per-model judgment ran under, printed when it is the pick; the refusal
-/// header names it only when every judged member carries the same demand
-/// ([`shared_demand`]).
+/// that age reads stale, and whether the reading is DATED and fresh, and for a
+/// credit-billed launch not the usage probe's (pass one's preference). `demand`
+/// is the member's own model-family demand — the one its per-model judgment ran
+/// under, printed when it is the pick; the refusal header names it only when
+/// every judged member carries the same demand ([`shared_demand`]).
 pub(crate) struct StartCandidate {
     pub(crate) name: ProfileName,
     pub(crate) block: Option<StartBlock>,
     pub(crate) age: crate::profile_json::OauthAge,
     pub(crate) stale: bool,
     pub(crate) fresh: bool,
+    /// The reading is the usage probe's and the launch is credit-billed, so
+    /// pass one took no freshness from it and the age cell says why.
+    pub(crate) probe_cut: bool,
     pub(crate) demand: Vec<String>,
     /// The walk's reference instant (epoch seconds), so a DATED age's ISO-date
     /// arm can be derived as `now - age` without a second clock read.
@@ -1936,6 +1941,7 @@ pub(crate) fn start_walk(
     // Claude Code's credit-billed model families, read once for the whole walk —
     // a per-row read would re-parse `.claude.json` for every member.
     let credit_billed = crate::claude_json::credit_billed_families();
+    let probe_read = crate::usage::probe_read_names(config);
     // The outgoing profile's env keys strip the base settings before the member
     // overlay re-adds its own — the same set, builder and base choice the
     // runtime write uses, so the demand's settings-derived models are exactly
@@ -1985,6 +1991,11 @@ pub(crate) fn start_walk(
             crate::start::process_model_env_of(&env_models),
         ));
         let families = (!demand.is_empty()).then_some(demand.as_slice());
+        // A probe reading knows nothing of the credit cap, so it carries no
+        // freshness for a launch with credit demand.
+        let probe_cut = probe_read.contains(name)
+            && families.is_some_and(|fams| fams.iter().any(|f| credit_billed.contains(f)));
+        let fresh = fresh && !probe_cut;
         let block = start_block(
             config,
             &member,
@@ -2006,6 +2017,7 @@ pub(crate) fn start_walk(
             age,
             stale,
             fresh,
+            probe_cut,
             demand,
             now,
         });

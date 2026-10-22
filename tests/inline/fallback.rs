@@ -7657,6 +7657,70 @@ fn start_walk_takes_chain_order_over_headroom() {
     assert_eq!(rows[1].block, None);
 }
 
+/// A probe reading knows nothing of the credit cap, so a credit-billed launch
+/// takes no freshness from it and prefers the next fresh member; any other
+/// launch keeps chain order onto the probed one.
+#[test]
+fn start_walk_takes_no_freshness_from_a_probe_reading_for_a_credit_billed_launch() {
+    for (model, pick) in [("fable", 1), ("opus", 0)] {
+        let _sb = start_walk_sandbox(&["probed", "polled"]);
+        start_walk_write_usage("probed", &start_walk_usage(240, 10.0, 10.0));
+        start_walk_write_usage("polled", &start_walk_usage(240, 10.0, 10.0));
+        let mut probed = start_walk_profile("probed");
+        crate::testutil::make_probed_account(&mut probed.profile);
+        probed.profile.models.default = Some(model.to_owned());
+        let mut polled = start_walk_profile("polled");
+        polled.profile.models.default = Some(model.to_owned());
+        let (config, _readings) = config_with_chain(vec![probed, polled], "probed");
+        let (rows, picked) = start_walk(&config, Isolation::Shared, &[], [None, None], false, None);
+        assert_eq!(picked, Some(pick), "{model}");
+        assert_eq!(
+            rows[0].block, None,
+            "{model}: the probed member is no block"
+        );
+    }
+}
+
+/// `--explain` promises a reason for every member it passes over, so a recent
+/// probe reading a credit-billed launch passed over names the probe; a stale
+/// one keeps the stronger reason alone, and any other launch reads it as before.
+#[test]
+fn start_walk_explain_names_the_probe_on_a_member_a_credit_billed_launch_passed_over() {
+    for (model, probed_age, expected) in [
+        (
+            "fable",
+            240,
+            "  probed  ok   usage 4m ago (probe, no credit figures)\n* polled  ok   usage 4m ago",
+        ),
+        (
+            "opus",
+            240,
+            "* probed  ok   usage 4m ago\n  polled  ok   usage 4m ago",
+        ),
+        (
+            "fable",
+            10_800,
+            "  probed  ok   usage 3h ago (stale)\n* polled  ok   usage 4m ago",
+        ),
+    ] {
+        let _sb = start_walk_sandbox(&["probed", "polled"]);
+        start_walk_write_usage("probed", &start_walk_usage(probed_age, 10.0, 10.0));
+        start_walk_write_usage("polled", &start_walk_usage(240, 10.0, 10.0));
+        let mut probed = start_walk_profile("probed");
+        crate::testutil::make_probed_account(&mut probed.profile);
+        probed.profile.models.default = Some(model.to_owned());
+        let mut polled = start_walk_profile("polled");
+        polled.profile.models.default = Some(model.to_owned());
+        let (config, _readings) = config_with_chain(vec![probed, polled], "probed");
+        let (rows, picked) = start_walk(&config, Isolation::Shared, &[], [None, None], false, None);
+        assert_eq!(
+            crate::format::render_start_walk(&rows, picked),
+            expected,
+            "{model}, probe reading {probed_age}s old"
+        );
+    }
+}
+
 #[test]
 fn start_walk_skips_a_member_capped_on_a_demanded_family() {
     let _sb = start_walk_sandbox(&["capped"]);
@@ -8270,6 +8334,7 @@ fn shared_demand_shares_the_same_families_in_any_order() {
             age: crate::profile_json::OauthAge::Absent,
             stale: false,
             fresh: false,
+            probe_cut: false,
             demand: vec!["opus".to_owned(), "sonnet".to_owned()],
             now: 0,
         },
@@ -8279,6 +8344,7 @@ fn shared_demand_shares_the_same_families_in_any_order() {
             age: crate::profile_json::OauthAge::Absent,
             stale: false,
             fresh: false,
+            probe_cut: false,
             demand: vec!["sonnet".to_owned(), "opus".to_owned()],
             now: 0,
         },
