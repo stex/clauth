@@ -3049,6 +3049,32 @@ pub(crate) fn bootstrap_fetch(
     }
 }
 
+/// [`try_seed_cache`] for one name over the cadence stamp it already holds,
+/// keeping the later of the two: a `retry-after` wait baked into the held
+/// stamp outlives a re-seed of the last reading.
+pub(crate) fn reseed_keeping_cadence(
+    store: &UsageStore,
+    status: &StatusStore,
+    last_fetched: &LastFetchedAt,
+    name: &ProfileName,
+    interval_ms: u64,
+) {
+    let key = FetchLeg::OAuth.key(name.clone());
+    let held = last_fetched
+        .lock()
+        .ok()
+        .and_then(|lf| lf.get(&key).copied());
+    try_seed_cache(store, status, last_fetched, name, now_ms(), interval_ms);
+    if let Some(held) = held
+        && let Ok(mut lf) = last_fetched.lock()
+        && lf
+            .get(&key)
+            .is_some_and(|seeded| seeded.as_millis() < held.as_millis())
+    {
+        lf.insert(key, held);
+    }
+}
+
 /// Load gate shared by both startup seed sites. Takes no locks so each caller
 /// stamps its own typed store and keeps its own lock rank (LAST_FETCHED then the
 /// status store). Returns the loaded value, the cache mtime, and a freshness-derived
@@ -5216,6 +5242,25 @@ fn fetch_probe_due_flagged(
             super::inference::anthropic::probe(&entry.token),
         );
         clear_fetch_activity(&state.activity, &key);
+        // Switched off while the probe was out, the account is read by nothing,
+        // and the switch-off cleared what the last probe left: this answer
+        // lands nowhere either, nor stands the countdown this tick published.
+        let (still_probed, is_active) = state
+            .config
+            .lock()
+            .map(|c| {
+                (
+                    c.find(&entry.name).is_some_and(usage_probe_admits),
+                    c.is_active(&entry.name),
+                )
+            })
+            .unwrap_or((false, false));
+        if !still_probed {
+            if let Ok(mut next) = state.next_refresh_per_profile.lock() {
+                next.remove(&key);
+            }
+            continue;
+        }
         // A refused token rests until it changes on disk (a re-mint) or a
         // manual refresh retries it once: the cadence cannot revive it.
         if matches!(outcome.status, FetchStatus::AuthExpired)
@@ -5225,11 +5270,6 @@ fn fetch_probe_due_flagged(
         }
         outcome.oauth_identity = entry.identity;
         outcome.epoch_at_spawn = entry.epoch_at_spawn;
-        let is_active = state
-            .config
-            .lock()
-            .map(|c| c.is_active(&entry.name))
-            .unwrap_or(false);
         if let Some(stamped) = apply_outcome_flagged(
             outcome,
             &state.store,

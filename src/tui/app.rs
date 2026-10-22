@@ -501,6 +501,10 @@ pub(crate) enum ConfigRow {
     /// OAuth-only auto-start toggle. `config_rows` renders it in the second
     /// slot (right below `Name`); declared here so the enum tracks that order.
     AutoStart,
+    /// `Profile::usage_probe`, for an OAuth account with no pair stored (the
+    /// setup-token shape `/usage` cannot read). Space/⏎ toggle it; `+`/`-`
+    /// step `usage_probe_interval_ms` while it is on, and never turn it on.
+    UsageProbe,
     /// `Profile::bell_threshold`, labelled `alert at`: the 5h % the bell rings
     /// at. ⏎ types a value (empty turns it off), `+`/`-` step it by 5.
     BellThreshold,
@@ -983,6 +987,7 @@ impl ConfigDraft {
             ConfigRow::EnvEntry(_) if self.active == Some(row) => &self.env_value,
             ConfigRow::EnvAdd if self.active == Some(ConfigRow::EnvAdd) => &self.env_new_key,
             ConfigRow::AutoStart
+            | ConfigRow::UsageProbe
             | ConfigRow::Type
             | ConfigRow::Family
             | ConfigRow::ModelOverrideAdd
@@ -1013,6 +1018,7 @@ impl ConfigDraft {
             ConfigRow::EnvEntry(_) if self.active == Some(row) => &mut self.env_value,
             ConfigRow::EnvAdd if self.active == Some(ConfigRow::EnvAdd) => &mut self.env_new_key,
             ConfigRow::AutoStart
+            | ConfigRow::UsageProbe
             | ConfigRow::Type
             | ConfigRow::Family
             | ConfigRow::ModelOverrideAdd
@@ -5904,6 +5910,21 @@ impl App {
             self.session_tokens.get(name.as_str()),
             Some(crate::claude::SessionTokenStatus::LongLived(_))
         )
+    }
+
+    /// Whether the account the setup tab's detail pane edits has its usage
+    /// probe on: the one state the `usage probe` row's `+`/`-` act in.
+    pub(crate) fn editing_usage_probe_on(&self) -> bool {
+        let Some(name) = self
+            .config_draft
+            .as_ref()
+            .and_then(|d| d.editing_name.as_deref())
+        else {
+            return false;
+        };
+        self.config()
+            .find(&ProfileName::from(name))
+            .is_some_and(|p| p.usage_probe)
     }
 
     /// Landing, armed at construction. The FIRST herdr launch opens the
@@ -20291,6 +20312,16 @@ fn handle_config_key(app: &mut App, key: KeyEvent) {
                 {
                     step_bell_threshold(app, -5.0);
                 }
+                KeyCode::Char('+' | '=')
+                    if rows[app.config_action_cursor] == ConfigRow::UsageProbe =>
+                {
+                    step_usage_probe_interval(app, USAGE_PROBE_STEP_MS);
+                }
+                KeyCode::Char('-' | '_')
+                    if rows[app.config_action_cursor] == ConfigRow::UsageProbe =>
+                {
+                    step_usage_probe_interval(app, -USAGE_PROBE_STEP_MS);
+                }
                 KeyCode::Char(' ') => {
                     let row = rows[app.config_action_cursor];
                     // Space cycles the `model` alias, the `+ new` form's `type`,
@@ -20795,6 +20826,11 @@ pub(crate) fn config_rows(app: &App) -> Vec<ConfigRow> {
     // auto-start sits right below name (OAuth-only; mutually exclusive with api key).
     if !is_api {
         rows.push(ConfigRow::AutoStart);
+        // The probe below it, only where `/usage` has nothing to read: beside a
+        // pair the switch would do nothing.
+        if profile.is_some_and(|p| crate::usage::usage_poll_pair(p).is_none()) {
+            rows.push(ConfigRow::UsageProbe);
+        }
     }
     rows.push(ConfigRow::BellThreshold);
     rows.push(ConfigRow::BaseUrl);
@@ -21127,6 +21163,11 @@ fn run_config_row(app: &mut App, row: ConfigRow) {
         ConfigRow::AutoStart => {
             if let Some(name) = name {
                 toggle_auto_start(app, &name);
+            }
+        }
+        ConfigRow::UsageProbe => {
+            if let Some(name) = name {
+                toggle_usage_probe(app, &name);
             }
         }
         ConfigRow::Delete => {
@@ -21957,6 +21998,7 @@ fn row_committed_value(profile: Option<&Profile>, name: &ProfileName, row: Confi
             .and_then(|p| p.env.values().nth(i).cloned())
             .unwrap_or_default(),
         ConfigRow::AutoStart
+        | ConfigRow::UsageProbe
         | ConfigRow::Type
         | ConfigRow::Family
         | ConfigRow::ModelOverrideAdd
@@ -22192,6 +22234,7 @@ fn apply_model_field(models: &mut ModelSettings, field: ConfigRow, raw: &str) {
         // `ConfigRow` variant fails the build instead of a silent no-op.
         ConfigRow::Name
         | ConfigRow::AutoStart
+        | ConfigRow::UsageProbe
         | ConfigRow::Type
         | ConfigRow::Family
         | ConfigRow::BellThreshold
@@ -24007,6 +24050,98 @@ fn toggle_auto_start(app: &mut App, name: &ProfileName) {
         Outcome::SaveFailed(e) => {
             app.toast(ToastKind::Danger, format!("save failed\n{e}"));
         }
+    }
+}
+
+/// Flip `name`'s usage probe and save it, rolling memory back on a failed
+/// save. The probe leg reads the shared config each tick, so the switch
+/// reaches it without a token-list rebuild.
+fn toggle_usage_probe(app: &mut App, name: &ProfileName) {
+    let saved = {
+        let mut cfg = app.config();
+        let Some(profile) = cfg.find_mut(name) else {
+            return;
+        };
+        profile.usage_probe = !profile.usage_probe;
+        let saved = save_profile_config(profile)
+            .map(|()| (profile.usage_probe, profile.usage_probe_interval_ms));
+        if saved.is_err() {
+            profile.usage_probe = !profile.usage_probe;
+        }
+        saved
+    };
+    match saved {
+        // Off, nothing reads the account any more, so it shows as it does after
+        // a restart, where the seed leaves it out: the reading, the last
+        // probe's status and its countdown go, or the frozen figures would read
+        // `up to date`. A refused token rests no longer either, so turning the
+        // probe back on tries it once, as `r` does. The cadence stamp stays.
+        Ok((false, _)) => {
+            if let Ok(mut usage) = app.usage_store.lock() {
+                usage.remove(name.as_str());
+            }
+            if let Ok(mut status) = app.usage_status.lock() {
+                status.remove(name.as_str());
+            }
+            if let Ok(mut next) = app.next_refresh_per_profile.lock() {
+                next.remove(&crate::usage::FetchLeg::OAuth.key(name.clone()));
+            }
+            if let Ok(mut suppressed) = app.suppressed_auth_expired.lock() {
+                suppressed.remove(name.as_str());
+            }
+        }
+        // On, the cached reading comes back at once, as a restart would seed
+        // it, dated at the probe's interval. The later of the held stamp and
+        // the reading's own keeps the cadence and any `retry-after` wait, so
+        // no probe goes out early for it.
+        Ok((true, interval_ms)) => crate::usage::reseed_keeping_cadence(
+            &app.usage_store,
+            &app.usage_status,
+            &app.last_fetched,
+            name,
+            interval_ms,
+        ),
+        Err(e) => app.toast(ToastKind::Danger, format!("save failed\n{e}")),
+    }
+}
+
+/// What one `+`/`-` on the `usage probe` row moves its interval by.
+const USAGE_PROBE_STEP_MS: i64 = 30_000;
+
+/// Step the drafted account's probe interval by `delta_ms` from wherever it
+/// stands, clamped to the band the loader keeps it in. Only while the probe is
+/// on: a stray `+` must never start probing, which spends inference and may
+/// start the 5h window.
+fn step_usage_probe_interval(app: &mut App, delta_ms: i64) {
+    let Some(name) = app
+        .config_draft
+        .as_ref()
+        .and_then(|d| d.editing_name.clone())
+        .map(ProfileName::from)
+    else {
+        return;
+    };
+    let saved = {
+        let mut cfg = app.config();
+        let Some(profile) = cfg.find_mut(&name).filter(|p| p.usage_probe) else {
+            return;
+        };
+        let before = profile.usage_probe_interval_ms;
+        profile.usage_probe_interval_ms = before.saturating_add_signed(delta_ms).clamp(
+            crate::profile::MIN_USAGE_PROBE_INTERVAL_MS,
+            crate::profile::MAX_USAGE_PROBE_INTERVAL_MS,
+        );
+        if profile.usage_probe_interval_ms == before {
+            return;
+        }
+        let saved = save_profile_config(profile);
+        if saved.is_err() {
+            profile.usage_probe_interval_ms = before;
+        }
+        saved
+    };
+    if let Err(e) = saved {
+        app.toast(ToastKind::Danger, format!("save failed\n{e}"));
     }
 }
 

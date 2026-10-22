@@ -63,8 +63,8 @@ pub(crate) use scheduler::{
     fill_chain_snapshot_stores, is_idle, is_stuck_rate_limited, is_stuck_streak,
     kick_block_switch_grade, mark_activity, mark_fetch_activity, oauth_without_pair,
     polled_third_party_names, profile_credential_fingerprint, queued_switch_away_is_stale,
-    read_skipped_unreadable, reading_is_polled, rotation_into_fetch, selected_activity,
-    selected_next_refresh, spawn_refresher, switch_gate_in_flight,
+    read_skipped_unreadable, reading_is_polled, reseed_keeping_cadence, rotation_into_fetch,
+    selected_activity, selected_next_refresh, spawn_refresher, switch_gate_in_flight,
     switch_grade_kick_blocked_from_cache, switch_grade_kick_lifts, third_party_credentialed,
     usage_cache_clock_of, usage_interval_ms, usage_poll_pair, usage_probe_admits,
 };
